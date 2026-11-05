@@ -173,3 +173,62 @@ dialog::backdrop { background: rgba(18, 62, 86, .35); }
 }
 .campo-msg { flex: 1; min-width: 200px; }
 .cartao > .aviso { margin-bottom: 12px; }
+
+/* Atendimento: lista, conversa e ficha financeira. */
+.atendimento {
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) minmax(0, 2.65fr);
+  min-height: 520px;
+  overflow: hidden;
+  border: 1px solid var(--linha);
+  border-radius: var(--raio);
+  background: var(--papel);
+  box-shadow: var(--sombra);
+}
+.atendimento.com-conversa { grid-template-columns: minmax(200px, 1fr) minmax(0, 2.1fr) minmax(220px, 1.08fr); }
+.atendimento-lista, .atendimento-chat, .atendimento-ficha { min-width: 0; }
+.atendimento-lista { display: flex; flex-direction: column; border-right: 1px solid var(--linha); }
+.atendimento-lista-topo { display: grid; gap: 10px; padding: 14px; border-bottom: 1px solid var(--linha); }
+.atendimento-lista-topo input { width: 100%; }
+.atendimento-lista .lista-conversas { max-height: 475px; overflow-y: auto; }
+.atendimento-lista .lista-conversas button { display: grid; gap: 3px; padding: 10px 12px; }
+.atendimento-lista .lista-conversas button:hover { background: var(--branco-quente); }
+.atendimento-lista .lista-conversas button.ativa { background: var(--azul-claro-2); }
+.atendimento-lista .lista-conversas button:focus-visible { outline-offset: -3px; }
+.atendimento-lista details { padding: 12px; margin: 8px; box-shadow: none; font-size: 13px; }
+.atendimento-lista details summary { cursor: pointer; }
+.atendimento-item-topo { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; }
+.atendimento-resumo { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--tinta-2); font-size: 13px; }
+.atendimento-chat { display: flex; flex-direction: column; }
+.atendimento-chat > .vazio { margin: auto 0; }
+.atendimento-chat-topo { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 12px 14px; }
+.atendimento-contato { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.atendimento-avatar { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 auto; border-radius: 50%; background: var(--azul-claro-2); font-size: 12px; font-weight: 700; }
+.atendimento-chat .chat { flex: 1; min-height: 270px; max-height: 54vh; border: 1px solid var(--linha); border-width: 1px 0; border-radius: 0; }
+.atendimento-chat .bolha { overflow-wrap: anywhere; }
+.atendimento-compositor { display: grid; gap: 8px; padding: 12px; }
+.atendimento-envio { display: flex; gap: 8px; }
+.atendimento-envio .campo-msg { min-width: 0; }
+.atendimento-ficha { padding: 14px; border-left: 1px solid var(--linha); overflow-wrap: anywhere; }
+.atendimento-ficha-status { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0 16px; }
+.atendimento-ficha .selo { white-space: normal; }
+.atendimento-ficha form { margin-top: 10px; gap: 10px; }
+.atendimento-ficha .form-linha { display: grid; }
+.atendimento-ficha .campo :is(input, select) { min-width: 0; width: 100%; }
+.atendimento-titulos { list-style: none; margin: 8px 0 0; padding: 0; }
+.atendimento-titulos li { display: grid; gap: 4px; padding: 9px 0; border-bottom: 1px solid var(--linha); }
+.atendimento-titulos .selo { justify-self: start; }
+.atendimento-voltar { display: none; }
+
+@media (max-width: 1180px) and (min-width: 761px) {
+  .atendimento.com-conversa { grid-template-columns: minmax(185px, .9fr) minmax(0, 2fr); }
+  .atendimento-ficha { grid-column: 2; border-top: 1px solid var(--linha); border-left: 0; }
+  .atendimento-lista { grid-row: span 2; }
+}
+@media (max-width: 760px) {
+  .atendimento, .atendimento.com-conversa { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .atendimento-lista { border-right: 0; }
+  .atendimento:not(.com-conversa) .atendimento-chat, .atendimento.com-conversa .atendimento-lista { display: none; }
+  .atendimento-voltar { display: inline-flex; align-items: center; padding: 6px; }
+  .atendimento-ficha { border-left: 0; border-top: 1px solid var(--linha); }
+}

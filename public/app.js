@@ -362,7 +362,10 @@ const rotuloResultado = r => ({ SEM_RESPOSTA: 'Sem resposta', RESPONDEU: 'Respon
 // ---------- Conversas ----------
 async function paginaConversas(conversaId) {
   const lista = h('div', { class: 'lista-conversas' }, carregando());
-  const detalhe = h('div', {}, conversaId ? carregando() : h('div', { class: 'cartao' }, vazio('Selecione uma conversa', 'As mensagens recebidas entram aqui, já separadas pela conexão da instituição.')));
+  const detalhe = h('section', { class: 'atendimento-chat', 'aria-label': 'Conversa' },
+    conversaId ? carregando() : vazio('Selecione uma conversa', 'As mensagens recebidas entram aqui, já separadas pela conexão da instituição.'));
+  const ficha = h('aside', { class: 'atendimento-ficha', 'aria-label': 'Ficha do responsável' });
+  const busca = h('input', { type: 'search', 'aria-label': 'Buscar conversas', placeholder: 'Buscar conversas…' });
   const simular = pode('teste.simular') && estado.ctx.conexoes.some(c => c.modo === 'TESTE') ? (() => {
     const f = h('form', {
       class: 'grade', onsubmit: async ev => {
@@ -378,22 +381,43 @@ async function paginaConversas(conversaId) {
     return h('details', { class: 'cartao' }, h('summary', {}, 'Ambiente de teste: simular mensagem recebida'), h('br'), f);
   })() : null;
   moldura('conversas', h('div', {}, cabecalho('Atendimento', `${estado.ctx.organizacao.nome} · conversas de WhatsApp desta instituição`),
-    h('div', { class: 'grade grade-2' }, detalhe, h('div', {}, h('section', { class: 'cartao' }, h('h2', {}, 'Conversas'), lista), simular))));
+    h('div', { class: `atendimento ${conversaId ? 'com-conversa' : ''}` },
+      h('aside', { class: 'atendimento-lista', 'aria-label': 'Lista de conversas' },
+        h('div', { class: 'atendimento-lista-topo' }, h('h2', {}, 'Conversas'), busca), lista, simular),
+      detalhe, conversaId ? ficha : null)));
+  if (conversaId) carregarConversa(conversaId, detalhe, ficha);
   try {
     const cs = await apiOrg('/conversas');
-    trocar(lista, ...(cs.length ? cs.map(cv => h('button', { class: cv.id === conversaId ? 'ativa' : '', onclick: () => ir(`#/o/${estado.orgId}/conversas/${cv.id}`) },
-      h('div', {}, h('strong', {}, cv.responsavel || telefoneBR(cv.telefone)), ' ', cv.verificada ? selo('Confirmada', 'ok', '✓') : selo('Não confirmada', 'atencao', '?')),
-      h('div', { class: 'mudo pequeno' }, `${cv.conexao.nome} · ${quando(cv.atualizada_em)}`),
-      cv.ultima ? h('div', { class: 'pequeno' }, (cv.ultima_direcao === 'SAIDA' ? 'Você: ' : '') + cv.ultima.slice(0, 70)) : null)) : [vazio('Nenhuma conversa ainda')]));
+    const desenhar = () => {
+      const termo = busca.value.trim().toLocaleLowerCase('pt-BR');
+      const digitos = termo.replace(/\D/g, '');
+      const visiveis = cs.filter(cv => !termo ||
+        [cv.responsavel, telefoneBR(cv.telefone), cv.conexao.nome].some(v => String(v || '').toLocaleLowerCase('pt-BR').includes(termo)) ||
+        (digitos && /^[\d+ ().-]+$/.test(termo) && String(cv.telefone || '').includes(digitos)));
+      trocar(lista, ...(visiveis.length ? visiveis.map(cv => h('button', {
+        class: cv.id === conversaId ? 'ativa' : '', 'aria-current': cv.id === conversaId ? 'true' : null,
+        onclick: () => ir(`#/o/${estado.orgId}/conversas/${cv.id}`),
+      },
+        h('div', { class: 'atendimento-item-topo' }, h('strong', {}, cv.responsavel || telefoneBR(cv.telefone)),
+          cv.verificada ? selo('Confirmada', 'ok', '✓') : selo('Pendente', 'atencao', '?')),
+        cv.ultima ? h('div', { class: 'atendimento-resumo' }, (cv.ultima_direcao === 'SAIDA' ? 'Você: ' : '') + cv.ultima) : null,
+        h('div', { class: 'mudo pequeno' }, `${cv.conexao.nome} · ${quando(cv.atualizada_em)}`))) :
+        [vazio(termo ? 'Nenhuma conversa encontrada' : 'Nenhuma conversa ainda')]));
+    };
+    busca.addEventListener('input', desenhar);
+    desenhar();
   } catch (e) { trocar(lista, erroBloco(e)); }
-  if (conversaId) carregarConversa(conversaId, detalhe);
 }
 
-async function carregarConversa(id, alvo) {
+async function carregarConversa(id, alvo, ficha) {
   let cv;
   try { cv = await apiOrg(`/conversas/${id}`); }
-  catch (e) { return trocar(alvo, e.status === 404 ? h('div', { class: 'cartao' }, vazio('Conversa não encontrada', 'Ela não existe ou não pertence ao seu escopo.')) : erroBloco(e)); }
-  const recarregar = () => carregarConversa(id, alvo);
+  catch (e) {
+    trocar(ficha);
+    return trocar(alvo, h('a', { class: 'atendimento-voltar', href: `#/o/${estado.orgId}/conversas` }, '‹ Conversas'),
+      e.status === 404 ? vazio('Conversa não encontrada', 'Ela não existe ou não pertence ao seu escopo.') : erroBloco(e));
+  }
+  const recarregar = () => carregarConversa(id, alvo, ficha);
   const msg = h('div');
   const chat = h('div', { class: 'chat', 'aria-live': 'polite' }, cv.mensagens.length ? cv.mensagens.map(m => h('div', { class: `bolha ${m.direcao === 'ENTRADA' ? 'entrada' : 'saida'}` }, m.texto,
     h('div', { class: 'meta' }, quando(m.em), m.direcao === 'SAIDA' ? ` · ${m.usuario_nome || ''} · ${({ SIMULADA: 'simulada (teste)', NAO_ENVIADA_ENVIO_DESLIGADO: 'não enviada (envio real desligado)', ENVIADA: 'enviada', FALHOU: 'falhou' })[m.status] || m.status}` : '', m.erro ? ` · ${m.erro}` : ''))) : vazio('Sem mensagens'));
@@ -420,29 +444,42 @@ async function carregarConversa(id, alvo) {
     h('div', { class: 'form-linha' }, h('div', { class: 'campo' }, h('label', {}, 'Responsável'), busca, selResp),
       h('div', { class: 'campo' }, h('label', { for: 'mat' }, 'Matrícula informada'), h('input', { type: 'text', id: 'mat', name: 'mat', required: true }))),
     resultados, h('div', {}, h('button', { class: 'botao', type: 'submit' }, 'Confirmar identidade')));
-    verificacao = h('section', { class: 'cartao' }, h('h2', {}, 'Confirmação do responsável'), h('br'), f);
+    verificacao = h('section', {}, h('h3', {}, 'Confirmação do responsável'), f);
   }
 
   const envio = h('form', {
-    class: 'acoes', onsubmit: async ev => {
+    class: 'atendimento-envio', onsubmit: async ev => {
       ev.preventDefault();
-      trocar(msg, );
+      trocar(msg);
       try { await apiOrg(`/conversas/${id}/mensagens`, { method: 'POST', body: { texto: envio.texto.value } }); recarregar(); }
       catch (e) { trocar(msg, aviso(e.message, 'erro', '⚠')); }
     },
   }, h('input', { type: 'text', name: 'texto', 'aria-label': 'Mensagem', placeholder: 'Escreva uma mensagem', required: true, class: 'campo-msg' }), h('button', { class: 'botao', type: 'submit' }, 'Enviar'));
 
   const janela = cv.conexao.modo === 'OFICIAL' ? (cv.janela_aberta_ate && cv.janela_aberta_ate > Date.now() ? selo(`Janela de 24h aberta até ${quando(cv.janela_aberta_ate)}`, 'info', '⏱') : selo('Fora da janela de 24h: só modelo aprovado', 'atencao', '⏱')) : selo('Conexão de teste', 'neutro', '⚙');
-  trocar(alvo, 
-    h('section', { class: 'cartao' },
-      h('div', { class: 'cabecalho-pagina' }, h('div', {}, h('h2', {}, cv.caso?.responsavel?.nome || telefoneBR(cv.telefone)), h('p', { class: 'mudo pequeno' }, `${cv.organizacao} · ${cv.conexao.nome}`)),
-        h('div', { class: 'acoes' }, cv.verificada ? selo('Identidade confirmada', 'ok', '✓') : selo('Identidade não confirmada', 'atencao', '?'), janela,
-          cv.caso_id ? h('a', { class: 'botao secundario pequeno', href: `#/o/${estado.orgId}/caso/${cv.caso_id}` }, 'Abrir caso') : null)),
-      chat, h('br'), msg, envio,
-      !cv.verificada ? h('div', { class: 'mudo pequeno' }, 'Mensagens com valores ou débitos são bloqueadas até a confirmação.') : null),
+  const nome = cv.caso?.responsavel?.nome || telefoneBR(cv.telefone);
+  const statusIdentidade = cv.verificada ? selo('Identidade confirmada', 'ok', '✓') : selo('Identidade não confirmada', 'atencao', '?');
+  const assumir = cv.caso_id && pode('caso.trabalhar') && cv.caso?.trava?.usuario_id !== estado.eu.usuario.id
+    ? h('button', { class: 'botao pequeno', onclick: async () => {
+      try { await apiOrg(`/casos/${cv.caso_id}/assumir`, { method: 'POST', body: {} }); recarregar(); }
+      catch (e) { trocar(msg, aviso(e.message, 'erro', '⚠')); }
+    } }, 'Assumir caso') : null;
+  trocar(alvo,
+    h('header', { class: 'atendimento-chat-topo' },
+      h('a', { class: 'atendimento-voltar', href: `#/o/${estado.orgId}/conversas` }, '‹ Conversas'),
+      h('div', { class: 'atendimento-contato' }, h('span', { class: 'atendimento-avatar', 'aria-hidden': 'true' }, cv.caso?.responsavel?.nome ? nome.split(/\s+/).slice(0, 2).map(p => p[0]).join('').toUpperCase() : 'WA'),
+        h('div', {}, h('h2', {}, nome), h('div', { class: 'mudo pequeno' }, cv.conexao.nome))),
+      h('div', { class: 'acoes' }, assumir, cv.caso_id ? h('a', { class: 'botao secundario pequeno', href: `#/o/${estado.orgId}/caso/${cv.caso_id}` }, 'Abrir caso') : null)),
+    chat,
+    pode('conversa.enviar') ? h('footer', { class: 'atendimento-compositor' }, msg, envio,
+      !cv.verificada ? h('div', { class: 'mudo pequeno' }, 'Valores e débitos ficam bloqueados até a confirmação.') : null) : null);
+  trocar(ficha, h('h2', {}, 'Ficha do responsável'),
+    h('div', { class: 'atendimento-ficha-status' }, statusIdentidade, janela),
     verificacao,
-    cv.caso ? h('section', { class: 'cartao' }, h('h2', {}, 'Títulos do responsável'), h('br'),
-      h('table', {}, h('tbody', {}, cv.caso.titulos.map(t => h('tr', {}, h('td', {}, t.aluno_nome, h('div', { class: 'mudo pequeno' }, `${t.id_origem} · venc. ${dataBR(t.vencimento)}`)), h('td', { class: 'num' }, reais(t.saldo_centavos)), h('td', {}, seloTitulo(t))))))) : null);
+    cv.caso ? h('section', {}, h('h3', {}, 'Títulos do responsável'),
+      h('ul', { class: 'atendimento-titulos' }, cv.caso.titulos.map(t => h('li', {},
+        h('div', { class: 'atendimento-item-topo' }, h('strong', {}, t.aluno_nome), h('strong', { class: 'num' }, reais(t.saldo_centavos))),
+        h('div', { class: 'mudo pequeno' }, `${t.id_origem} · venc. ${dataBR(t.vencimento)}`), seloTitulo(t))))) : null);
 }
 
 // ---------- Importação ----------
