@@ -140,7 +140,9 @@ function analisar(orgId, linhasBrutas, dataReferencia, escopoLote) {
     else grupo.slice(1).forEach(g => { g.repetido = true; });
   }
 
-  const tituloAtual = um.bind(null, `SELECT t.*, r.chave_origem AS resp_chave, a.matricula AS aluno_matricula
+  const tituloAtual = um.bind(null, `SELECT t.*, r.chave_origem AS resp_chave, a.matricula AS aluno_matricula,
+    EXISTS(SELECT 1 FROM movimentos_financeiros m WHERE m.titulo_id=t.id) OR
+    EXISTS(SELECT 1 FROM acordos ac WHERE ac.titulo_id=t.id AND ac.status='ACEITO') AS financeiro_controlado
     FROM titulos t JOIN responsaveis r ON r.id=t.responsavel_id JOIN alunos a ON a.id=t.aluno_id
     WHERE t.organizacao_id=? AND t.id_origem=?`);
 
@@ -153,6 +155,11 @@ function analisar(orgId, linhasBrutas, dataReferencia, escopoLote) {
     if (atual.aluno_matricula !== r.dados.aluno_matricula) { r.status = 'REJEITADO'; r.motivos.push(`Título já pertence a outro aluno (matrícula ${atual.aluno_matricula})`); continue; }
     if (atual.saldo_referencia > dataReferencia) { r.status = 'REJEITADO'; r.motivos.push(`Arquivo mais antigo que o saldo atual (referência ${atual.saldo_referencia})`); continue; }
     const mudou = CAMPOS_TITULO.filter(c => (atual[c] ?? null) !== (r.dados[c] ?? null));
+    if (atual.financeiro_controlado && mudou.some(c => ['saldo_centavos', 'situacao', 'unidade_id'].includes(c))) {
+      r.status = 'REJEITADO';
+      r.motivos.push('Título com acordo aceito ou movimento financeiro. Concilie pela tela de Retorno de pagamentos.');
+      continue;
+    }
     r.alteracoes = mudou.map(c => ({ campo: c, de: atual[c], para: r.dados[c] }));
     r.status = mudou.length ? 'ALTERADO' : 'SEM_MUDANCA';
   }
@@ -161,7 +168,7 @@ function analisar(orgId, linhasBrutas, dataReferencia, escopoLote) {
   let ausentes = [];
   if (escopoLote === 'COMPLETA') {
     const validos = resultado.filter(r => ['NOVO', 'ALTERADO', 'SEM_MUDANCA', 'REPETIDO'].includes(r.status));
-    const ids = new Set(validos.map(r => r.dados.id_titulo));
+    const ids = new Set(resultado.map(r => r.dados.id_titulo).filter(Boolean));
     const unidadesNoArquivo = new Set(validos.map(r => r.dados.unidade_id || '__sem__'));
     ausentes = varios("SELECT id, id_origem, unidade_id FROM titulos WHERE organizacao_id=? AND situacao='ABERTO'", orgId)
       .filter(t => unidadesNoArquivo.has(t.unidade_id || '__sem__') && !ids.has(t.id_origem));
@@ -186,7 +193,6 @@ function resumir(resultado, ausentes, extras = {}) {
 
 export function criarPrevia({ escopo, usuario, arquivoNome, conteudo, dataReferencia, tipo = 'CARTEIRA', escopoLote = 'COMPLETA' }) {
   const orgId = escopo.org.id;
-  if (tipo === 'RETORNO') throw new ErroHttp(501, 'Importação de retorno financeiro está prevista para o incremento 3.');
   if (tipo !== 'CARTEIRA') throw new ErroHttp(400, 'Tipo de arquivo inválido');
   if (!['COMPLETA', 'PARCIAL'].includes(escopoLote)) throw new ErroHttp(400, 'Escopo inválido');
   if (!dataValida(dataReferencia || '')) throw new ErroHttp(400, 'Informe a data de referência do arquivo (AAAA-MM-DD)');

@@ -27,7 +27,7 @@ function loadEnvFile(){try{const f=path.join(__dirname,'.env');if(!fs.existsSync
 loadEnvFile();
 const PORT=Number(process.env.PORT||3001);
 const HOST=process.env.HOST||'0.0.0.0';
-const APP_VERSION='0.3.1';
+const APP_VERSION='0.4.0';
 const ADMIN_USER=String(process.env.GOCHAT_ADMIN_USER||process.env.GO_NEGOCIA_ADMIN_LOGIN||'admin').trim().toLowerCase();
 const ADMIN_PASSWORD=String(process.env.GOCHAT_ADMIN_PASSWORD||process.env.GO_NEGOCIA_ADMIN_SENHA||'');
 const publicDir=path.join(__dirname,'public');

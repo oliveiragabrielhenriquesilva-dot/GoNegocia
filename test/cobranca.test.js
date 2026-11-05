@@ -41,7 +41,7 @@ after(() => { srv?.kill(); fs.rmSync(tmp, { recursive: true, force: true }); });
 test('home de apresentação separada do sistema logado, sem o nome anterior', async () => {
   const home = await (await fetch(base + '/')).text();
   assert.match(home, /<title>GO Negocia · Atendimento financeiro para escolas<\/title>/);
-  assert.match(home, /Consulta de carteira/); assert.match(home, /Acordos e parcelamentos/); assert.match(home, /Em desenvolvimento/);
+  assert.match(home, /Consulta de carteira/); assert.match(home, /Acordos e parcelamentos/); assert.match(home, /Relatório para a escola/);
   assert.match(home, /href="\/app"/);
   const app = await (await fetch(base + '/app')).text();
   assert.match(app, /id="loginForm"/);
@@ -225,11 +225,12 @@ test('migração da cobrança é reversível e não toca o banco do atendimento'
   const db = await import('../src/cobranca/db.js');
   const arq = path.join(tmp, 'migracao.sqlite');
   db.abrirBanco(arq);
-  assert.deepEqual(db.migrar(), ['001_cobranca_base', '002_modulos_usuario']);
+  assert.deepEqual(db.migrar(), ['001_cobranca_base', '002_modulos_usuario', '003_acordos_pagamentos']);
+  assert.equal(db.reverterUltima(), '003_acordos_pagamentos');
   assert.equal(db.reverterUltima(), '002_modulos_usuario');
   assert.equal(db.reverterUltima(), '001_cobranca_base');
   assert.equal(db.um("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='titulos'").n, 0);
-  assert.deepEqual(db.migrar(), ['001_cobranca_base', '002_modulos_usuario']);
+  assert.deepEqual(db.migrar(), ['001_cobranca_base', '002_modulos_usuario', '003_acordos_pagamentos']);
   db.fecharBanco();
   const principal = new DatabaseSync(path.join(tmp, 'data', 'balbino-chat.sqlite'), { readOnly: true });
   const tabelas = principal.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => r.name).sort();
@@ -278,4 +279,70 @@ test('módulos por usuário: só Mensagens, só Cobrança, bloqueado no servidor
   assert.deepEqual((await u('GET', '/api/cobranca/eu')).corpo.instituicoes, []);
   // Restaura
   assert.equal((await adm('PUT', `/api/cobranca/admin/modulos/${at.id}`, { atendimento: true, cobranca: true })).status, 200);
+});
+
+test('acordo com aprovação, aceite, pagamento, estorno e relatório conciliado', async () => {
+  const sup = U.supervisora;
+  const org = `/api/cobranca/o/${S.hz}`;
+  const caso = `${org}/casos/${S.casoMariana}`;
+  const dia = new Intl.DateTimeFormat('en-CA', { timeZone:'America/Sao_Paulo' }).format(new Date());
+  const detalhe = () => sup('GET', caso).then(r => r.corpo);
+  const titulo = (await detalhe()).titulos.find(t => t.id_origem === 'HZ-1003');
+  assert.equal(titulo.saldo_centavos, 98000);
+  assert.equal((await sup('POST',caso+'/assumir',{forcar:true})).status,200);
+  const proposta = await sup('POST',caso+'/acordos',{
+    titulo_id:titulo.id,total_centavos:90000,entrada_centavos:30000,parcelas:2,primeiro_vencimento:dia,
+  });
+  assert.equal(proposta.status,200,JSON.stringify(proposta.corpo));
+  assert.equal(proposta.corpo.status,'REVISAO');
+  const acordo = org+'/acordos/'+proposta.corpo.id;
+  assert.equal((await U['atendente.horizonte']('POST',acordo,{acao:'aprovar'})).status,403);
+  assert.equal((await U['atendente.centro']('POST',acordo,{acao:'aprovar'})).status,404);
+  assert.equal((await U['atendente.valeverde']('GET',org+'/acordos')).status,404);
+  assert.equal((await sup('POST',acordo,{acao:'aceitar',prova:'teste'})).status,409);
+  assert.equal((await sup('POST',acordo,{acao:'aprovar'})).corpo.status,'PROPOSTA');
+  assert.equal((await sup('POST',acordo,{acao:'aceitar'})).status,400);
+  assert.equal((await sup('POST',acordo,{acao:'aceitar',prova:'Aceite simulado no atendimento'})).corpo.status,'ACEITO');
+  assert.equal((await detalhe()).titulos.find(t=>t.id===titulo.id).em_acordo,true);
+  const getAcordo = async () => (await sup('GET',org+'/acordos')).corpo.find(a=>a.id===proposta.corpo.id);
+  assert.deepEqual((await getAcordo()).parcelas.map(p=>p.valor_centavos),[30000,30000,30000]);
+
+  const retorno = (linhas) => ({ arquivo_nome:'retorno.csv',conteudo_base64:Buffer.from(['id_titulo;referencia;tipo;data;valor;estorna',...linhas].join('\n')).toString('base64') });
+  const mov = (ref,valor,tipo='PAGAMENTO',estorna='') => `HZ-1003;${ref};${tipo};${dia};${valor};${estorna}`;
+  const aplicar = async (linhas) => {
+    const body=retorno(linhas);
+    const p = await sup('POST',org+'/retorno',body);
+    assert.equal(p.status,200,JSON.stringify(p.corpo));
+    assert.equal(p.corpo.rejeitados,0,JSON.stringify(p.corpo));
+    const a = await sup('POST',org+'/retorno',{...body,token:p.corpo.token});
+    assert.equal(a.status,200,JSON.stringify(a.corpo));
+    return a.corpo;
+  };
+  const invalido=retorno([mov('P-1','300'),mov('P-2','999')]);
+  const pv=await sup('POST',org+'/retorno',invalido);
+  assert.equal(pv.corpo.rejeitados,1);
+  assert.equal((await sup('POST',org+'/retorno',{...invalido,token:pv.corpo.token})).status,409);
+  assert.equal((await detalhe()).titulos.find(t=>t.id===titulo.id).saldo_centavos,98000,'lote inválido não baixa a primeira linha');
+
+  assert.equal((await aplicar([mov('P-1','300')])).validos,1);
+  assert.equal((await detalhe()).titulos.find(t=>t.id===titulo.id).saldo_centavos,68000);
+  assert.deepEqual((await getAcordo()).parcelas.map(p=>p.pago_centavos),[30000,0,0]);
+  assert.equal((await aplicar([mov('P-1','300')])).linhas[0].status,'REPETIDO');
+  assert.equal((await aplicar([mov('P-2','600')])).validos,1);
+  assert.equal((await getAcordo()).status,'QUITADO');
+  assert.equal((await detalhe()).titulos.find(t=>t.id===titulo.id).situacao,'PAGO');
+  assert.equal((await aplicar([mov('E-1','50','ESTORNO','P-2')])).validos,1);
+  assert.equal((await getAcordo()).status,'ACEITO');
+  assert.equal((await detalhe()).titulos.find(t=>t.id===titulo.id).saldo_centavos,13000,'estorno desfaz a quitação e repõe o desconto condicional');
+
+  const r = await sup('GET',org+`/relatorio-financeiro?inicio=${dia}&fim=${dia}`);
+  assert.equal(r.status,200,JSON.stringify(r.corpo));
+  assert.equal(r.corpo.acordos,1);
+  assert.equal(r.corpo.recebidos_centavos,90000);
+  assert.equal(r.corpo.estornos_centavos,5000);
+  assert.equal(r.corpo.liquido_centavos,85000);
+  assert.equal(r.corpo.movimentos.length,3);
+  const centro = await U['atendente.centro']('GET',org+`/relatorio-financeiro?inicio=${dia}&fim=${dia}`);
+  assert.equal(centro.status,200);
+  assert.equal(centro.corpo.movimentos.length,0,'Jardim fora do acesso de Centro');
 });

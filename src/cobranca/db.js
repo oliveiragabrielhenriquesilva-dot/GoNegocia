@@ -4,8 +4,9 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import * as m001 from './migracao-001.js';
 import * as m002 from './migracao-002.js';
+import * as m003 from './migracao-003.js';
 
-export const MIGRACOES = [m001, m002];
+export const MIGRACOES = [m001, m002, m003];
 
 let banco = null;
 

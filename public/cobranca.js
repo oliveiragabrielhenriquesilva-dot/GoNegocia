@@ -27,6 +27,7 @@ function chipTitulo(t) {
   if (t.situacao === 'CANCELADO') return chip('Cancelado', 'neutro', '–');
   if (t.bloqueio === 'CONTESTADO') return chip('Contestado · pausado', 'alerta', '⏸');
   if (t.bloqueio === 'COMPROVANTE_EM_ANALISE') return chip('Comprovante em análise', 'atencao', '⏸');
+  if (t.em_acordo) return chip('Em acordo', 'ok');
   if (t.ausente) return chip('Ausente na última carteira', 'atencao', '?');
   return chip('Em aberto', 'info', '●');
 }
@@ -65,7 +66,9 @@ async function carregarEu(forcar = false) {
   mostra('cobCarteira', tem);
   mostra('cobImportar', cob.eu.admin || papeis.has('SUPERVISOR'));
   mostra('cobEscolas', cob.eu.admin);
-  mostra('cobEmBreve', tem);
+  mostra('cobAcordos', tem && (cob.eu.admin || papeis.has('ATENDENTE') || papeis.has('SUPERVISOR')));
+  mostra('cobRetorno', tem && (cob.eu.admin || papeis.has('SUPERVISOR')));
+  mostra('cobRelatorio', tem);
   const ids = cob.eu.instituicoes.map(i => i.organizacao_id);
   if (!ids.includes(cob.org)) cob.org = ids.includes(lerOrg()) ? lerOrg() : ids[0] || null;
   return cob.eu;
@@ -92,13 +95,15 @@ export async function carregarPagina(page) {
   try {
     await carregarEu();
     if (page === 'cobEscolas') return paginaEscolas(raiz);
-    if (page === 'cobEmBreve') return paginaEmBreve(raiz);
     if (!cob.org) { raiz.innerHTML = cabecalho('Cobrança') + `<div class="card pad">${aviso(cob.eu?.admin ? 'Cadastre a primeira escola em Cobrança › Escolas e acessos.' : 'Você ainda não tem acesso a nenhuma escola. Peça ao administrador.')}</div>`; return; }
     await carregarCtx();
     if (page === 'cobFila') return paginaFila(raiz);
     if (page === 'cobCarteira') return paginaCarteira(raiz);
     if (page === 'cobImportar') return paginaImportar(raiz);
     if (page === 'cobCaso') return paginaCaso(raiz);
+    if (page === 'cobAcordos') return paginaAcordos(raiz);
+    if (page === 'cobRetorno') return paginaRetorno(raiz);
+    if (page === 'cobRelatorio') return paginaRelatorio(raiz);
   } catch (e) { raiz.innerHTML = aviso(e.message, 'erro'); }
 }
 
@@ -276,6 +281,7 @@ async function paginaCaso(raiz) {
       <div>
         <div class="card pad"><h3>Títulos</h3><div class="small muted">Alunos: ${c.alunos.map(a => `${esc(a.nome || 'Aluno')} (mat. ${esc(a.matricula)}${a.unidade_nome ? ' · ' + esc(a.unidade_nome) : ''})`).join(' · ') || '—'}</div>
           ${tabelaTitulos(c.titulos, true)}</div>
+        <div class="card pad" id="acordosCaso">Carregando acordos…</div>
         <div class="card pad"><h3>Registrar contato</h3>${formContato(minha)}</div>
       </div>
       <div>
@@ -318,6 +324,8 @@ async function paginaCaso(raiz) {
     } catch (e) { msgErro($('#cpMsg'), e); }
   };
   ligarFormContato(raiz, c.id, recarregar);
+  const host = raiz.querySelector('#acordosCaso');
+  acordosDoCaso(host, c, minha, recarregar).catch(e => msgErro(host, e));
 }
 
 function tabelaTitulos(titulos, completa) {
@@ -395,7 +403,6 @@ export async function painelConversa(box, c) {
     }
     html += '</div>';
   }
-  html += `<div class="small muted cob-breve">Acordos, parcelas e baixas: em desenvolvimento.</div>`;
   el.innerHTML = html;
   const associar = el.querySelector('#cobAssociar');
   if (associar) associar.onclick = async () => { try { await apiCob(`/api/cobranca/conversas/${c.id}/associar`, { method: 'POST', body: { organizacao_id: el.querySelector('#cobAssocOrg').value } }); recarregar(); } catch (e) { B().toast(e.message, true); } };
@@ -463,15 +470,182 @@ async function paginaEscolas(raiz) {
   });
 }
 
-// ---------- O que já funciona e o que está em desenvolvimento ----------
-function paginaEmBreve(raiz) {
-  const ok = ['Cadastro de escolas, unidades, conexões e equipe', 'Importação de carteira CSV/XLSX com prévia, rejeições e reimportação sem duplicar', 'Consulta da carteira por escola e unidade', 'Fila de cobrança com próxima ação, retorno combinado e trava por caso', 'Painel Cobrança na conversa, com títulos só após confirmar a identidade', 'Contato ativo a partir do caso, na conexão da escola', 'Pendências de contestação, comprovante e condição fora da regra ligadas ao caso e aos títulos'];
-  const dev = ['Regras de negociação por escola (desconto, entrada, parcelas, alçada)', 'Proposta, aceite e formalização do acordo', 'Parcelas do acordo e acompanhamento', 'Retorno de pagamento da escola: parcial, integral, direto, duplicidade e estorno', 'Baixa somente do valor confirmado', 'Relatório e prestação de contas para a escola'];
-  raiz.innerHTML = cabecalho('Acordos e baixas', 'Situação do módulo de cobrança') +
-    `<div class="cob-grade"><div class="card pad"><h3>${chip('Disponível', 'ok', '✓')} Já funciona</h3><ul>${ok.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>
-     <div class="card pad"><h3>${chip('Em desenvolvimento', 'atencao', '⏳')} Próximas etapas</h3><ul>${dev.map(x => `<li>${esc(x)}</li>`).join('')}</ul>
-     <div class="small muted">Até lá, promessas de pagamento são registradas no caso (promessa não é acordo nem pagamento).</div></div></div>`;
-  ligarSeletor('cobEmBreve');
+const STATUS_ACORDO = { REVISAO:'Em aprovação', PROPOSTA:'Proposta', ACEITO:'Aceito', QUITADO:'Quitado', CANCELADO:'Cancelado' };
+const unidadeTexto = u => esc(u || 'Sem unidade');
+const dadosForm = f => Object.fromEntries(new FormData(f));
+const percent = n => Math.round(Number(n)*100);
+function tabelaFinanceira(colunas, linhas) {
+  if (!linhas.length) return '<p class="small muted">Nenhum registro.</p>';
+  return `<div style="overflow:auto"><table class="cob-tabela"><thead><tr>${colunas.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead>
+    <tbody>${linhas.map(row=>`<tr>${row.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+
+function downloadCsv(nome, linhas) {
+  const cell = v => {
+    const s = String(v ?? '');
+    const safe = typeof v === 'string' && /^[\s\uFEFF]*[=+\-@\t\r]/.test(s) ? "'" + s : s;
+    return '"' + safe.replace(/"/g,'""') + '"';
+  };
+  const url = URL.createObjectURL(new Blob(['\uFEFF',linhas.map(l=>l.map(cell).join(';')).join('\r\n')],{type:'text/csv;charset=utf-8'}));
+  const a=document.createElement('a'); a.href=url; a.download=nome; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+function fichaAcordo(a, { minha = false, supervisor = false, abrir = false } = {}) {
+  return `<details class="card pad">
+    <summary><b>${esc(a.id_origem)}</b> · ${esc(a.responsavel)} · ${esc(STATUS_ACORDO[a.status])} · ${reais(a.total_centavos)}</summary>
+    <p class="small muted">${unidadeTexto(a.unidade)} · Recebido ${reais(a.recebido_centavos)}${a.aceito_em ? ' · Aceite ' + quando(a.aceito_em) : ''}</p>
+    ${tabelaFinanceira(['Parcela','Vencimento','Valor','Recebido'],a.parcelas.map(p=>[p.numero || 'Entrada',
+      dataBR(p.vencimento) + (a.status==='ACEITO' && p.pago_centavos<p.valor_centavos && p.vencimento<hojeISO() ? ' · Em atraso' : ''),
+      reais(p.valor_centavos),reais(p.pago_centavos)]))}
+    <div class="cob-form-linha">
+      ${abrir ? `<button class="btn small" data-ver-caso="${esc(a.caso_id)}">Abrir caso</button>` : ''}
+      ${supervisor && a.status==='REVISAO' ? `<button class="btn small" data-acordo="${a.id}" data-acao="aprovar">Aprovar exceção</button>` : ''}
+      ${minha && a.status==='PROPOSTA' ? `<label class="cob-campo">Referência do aceite<input class="input" data-prova="${a.id}" maxlength="500" placeholder="Protocolo ou referência da mensagem"></label><button class="btn primary small" data-acordo="${a.id}" data-acao="aceitar">Registrar aceite</button>` : ''}
+      ${((minha || supervisor) && ['REVISAO','PROPOSTA'].includes(a.status) || supervisor && a.status==='ACEITO' && !a.recebido_centavos) ? `<button class="btn small" data-acordo="${a.id}" data-acao="cancelar">Cancelar acordo</button>` : ''}
+    </div><div data-erro-acordo></div>
+  </details>`;
+}
+
+function ligarAcoesAcordo(raiz,recarregar) {
+  const org = cob.org;
+  raiz.querySelectorAll('[data-ver-caso]').forEach(b=>b.onclick=()=>abrirCaso(b.dataset.verCaso));
+  raiz.querySelectorAll('[data-acordo]').forEach(b=>b.onclick=async()=>{
+    const card=b.closest('details'), {acordo,acao}=b.dataset;
+    if (acao==='cancelar' && !confirm('Cancelar este acordo?')) return;
+    const prova=card.querySelector('[data-prova]')?.value;
+    b.disabled=true;
+    try {
+      await apiCob(`/api/cobranca/o/${org}/acordos/${acordo}`,{method:'POST',body:{acao,prova}});
+      if (org===cob.org) await recarregar();
+    } catch(e) { msgErro(card.querySelector('[data-erro-acordo]'),e); b.disabled=false; }
+  });
+}
+
+async function paginaAcordos(raiz,pagina=1) {
+  const org=cob.org, supervisor=pode('fila.distribuir'), editar=supervisor&&cob.ctx.todas_unidades;
+  const [regras,acordos]=await Promise.all([orgApi('/regras-negociacao'),orgApi(`/acordos?pagina=${pagina}`)]);
+  if (org!==cob.org) return;
+  raiz.innerHTML=cabecalho('Acordos e parcelamentos','Crie propostas a partir de um título no caso de cobrança. Use esta tela para acompanhar parcelas e aprovar exceções.')+
+    `<div class="card pad"><h3>Regras da escola</h3><p class="small">Desconto até ${regras.desconto_max_bp/100}% · até ${regras.parcelas_max} parcela(s), contando a entrada · entrada mínima de ${regras.entrada_min_bp/100}%.</p>
+    ${editar ? `<form class="cob-form-linha" id="regraForm"><label class="cob-campo">Desconto máximo (%)<input required class="input" type="number" name="desconto" min="0" max="99.99" step="0.01" value="${regras.desconto_max_bp/100}"></label>
+    <label class="cob-campo">Máximo de parcelas<input required class="input" type="number" name="parcelas" min="1" max="60" value="${regras.parcelas_max}"></label>
+    <label class="cob-campo">Entrada mínima (%)<input required class="input" type="number" name="entrada" min="0" max="100" step="0.01" value="${regras.entrada_min_bp/100}"></label>
+    <button class="btn primary">Salvar regras</button></form>` : ''}<div id="regraErro"></div></div>
+    <div>${acordos.map(a=>fichaAcordo(a,{supervisor,abrir:true})).join('')||'<p class="small muted">Nenhum acordo registrado.</p>'}</div>
+    <div class="cob-acoes">${pagina>1?'<button class="btn" id="acoAnterior">Anterior</button>':''}${acordos.length===50?'<button class="btn" id="acoProxima">Próxima</button>':''}</div>`;
+  ligarSeletor('cobAcordos');
+  ligarAcoesAcordo(raiz,()=>paginaAcordos(raiz,pagina));
+  const form=raiz.querySelector('#regraForm');
+  if(form) form.onsubmit=async e=>{
+    e.preventDefault();
+    const v=dadosForm(form);
+    try { await apiCob(`/api/cobranca/o/${org}/regras-negociacao`,{method:'PUT',body:{desconto_max_bp:percent(v.desconto),parcelas_max:Number(v.parcelas),entrada_min_bp:percent(v.entrada)}}); if(org===cob.org) await paginaAcordos(raiz,pagina); }
+    catch(ex) { msgErro(raiz.querySelector('#regraErro'),ex); }
+  };
+  const paginar=n=>paginaAcordos(raiz,n).catch(e=>B().toast(e.message,true));
+  if(raiz.querySelector('#acoAnterior')) raiz.querySelector('#acoAnterior').onclick=()=>paginar(pagina-1);
+  if(raiz.querySelector('#acoProxima')) raiz.querySelector('#acoProxima').onclick=()=>paginar(pagina+1);
+}
+
+async function acordosDoCaso(host,c,minha,recarregar) {
+  const org=cob.org;
+  const acordos=await orgApi(`/acordos?caso=${encodeURIComponent(c.id)}`);
+  if(!host.isConnected || org!==cob.org) return;
+  const titulos=c.titulos.filter(t=>t.negociavel && t.saldo_centavos>0 && !t.alertas.some(a=>a.codigo==='DESATUALIZADO'));
+  host.innerHTML=`<h3>Acordos e parcelas</h3>${acordos.map(a=>fichaAcordo(a,{minha,supervisor:pode('fila.distribuir')})).join('') || '<p class="small muted">Nenhum acordo neste caso.</p>'}
+    ${minha&&titulos.length ? `<details><summary>Nova proposta por título</summary><form id="novoAcordo">
+      <label class="cob-campo">Título<select name="titulo_id" class="input">${titulos.map(t=>`<option value="${esc(t.id)}">${esc(t.id_origem)} · ${reais(t.saldo_centavos)}</option>`).join('')}</select></label>
+      <div class="cob-form-linha"><label class="cob-campo">Valor total (R$)<input class="input" required type="number" name="total" min="0.01" step="0.01"></label>
+      <label class="cob-campo">Entrada (R$)<input class="input" required type="number" name="entrada" min="0" step="0.01" value="0"></label>
+      <label class="cob-campo">Parcelas após entrada<input class="input" required type="number" name="parcelas" min="1" max="60" value="1"></label>
+      <label class="cob-campo">Primeiro vencimento ou entrada<input class="input" required type="date" name="primeiro_vencimento" min="${hojeISO()}"></label></div>
+      <button class="btn primary">Registrar proposta</button></form></details>` : '<p class="small muted">Para criar proposta, assuma o caso e confira se há título com saldo atualizado.</p>'}
+    <div id="novoAcordoErro"></div>`;
+  ligarAcoesAcordo(host,recarregar);
+  const form=host.querySelector('#novoAcordo');
+  if(form) form.onsubmit=async e=>{
+    e.preventDefault();
+    const v=dadosForm(form), botao=form.querySelector('button');
+    botao.disabled=true;
+    try {
+      const r=await apiCob(`/api/cobranca/o/${org}/casos/${c.id}/acordos`,{method:'POST',body:{titulo_id:v.titulo_id,total_centavos:percent(v.total),entrada_centavos:percent(v.entrada),parcelas:Number(v.parcelas),primeiro_vencimento:v.primeiro_vencimento}});
+      B().toast(r.status==='REVISAO'?'Proposta encaminhada para aprovação':'Proposta registrada');
+      if(host.isConnected && org===cob.org) await recarregar();
+    } catch(ex) { msgErro(host.querySelector('#novoAcordoErro'),ex); botao.disabled=false; }
+  };
+}
+
+function paginaRetorno(raiz) {
+  const org=cob.org;
+  raiz.innerHTML=cabecalho('Retorno de pagamentos','Confira os pagamentos e estornos informados pela escola antes de baixar valores.')+
+    (!pode('carteira.importar')||!cob.ctx.todas_unidades ? aviso('O retorno exige permissão de importação e acesso a todas as unidades.') :
+    `<div class="card pad"><p>Use um CSV ou XLSX com as colunas id_titulo, referencia, tipo, data, valor e estorna. Informe uma referência única por movimento.</p>
+      <p class="small muted">Use PAGAMENTO para valor confirmado ou ESTORNO para reverter parte ou todo um pagamento. No estorno, preencha a referência original na coluna estorna. As baixas ocorrem apenas após aplicar a prévia.</p>
+      <div class="cob-form-linha"><button class="btn" id="retModelo">Baixar modelo CSV</button><input class="input" type="file" id="retArquivo" aria-label="Arquivo de retorno" accept=".csv,.xlsx"><button class="btn primary" id="retPrevia">Gerar prévia</button></div>
+      <div id="retResultado"></div></div>`);
+  ligarSeletor('cobRetorno');
+  const btn=raiz.querySelector('#retPrevia');
+  if(!btn) return;
+  raiz.querySelector('#retModelo').onclick=()=>downloadCsv('modelo-retorno.csv',[['id_titulo','referencia','tipo','data','valor','estorna']]);
+  const arquivo=raiz.querySelector('#retArquivo'), saida=raiz.querySelector('#retResultado');
+  const post=body=>apiCob(`/api/cobranca/o/${org}/retorno`,{method:'POST',body});
+  arquivo.onchange=()=>{saida.innerHTML='';};
+  btn.onclick=async()=>{
+    const file=arquivo.files[0];
+    if(!file||file.size>2*1024*1024) return msgErro(saida,new Error('Selecione um arquivo de até 2 MB.'));
+    btn.disabled=arquivo.disabled=true;
+    saida.innerHTML=aviso('Analisando…');
+    try {
+      const base64=await new Promise((resolve,reject)=>{
+        const reader=new FileReader(); reader.onload=()=>resolve(String(reader.result).split(',')[1]); reader.onerror=reject; reader.readAsDataURL(file);
+      });
+      const body={arquivo_nome:file.name,conteudo_base64:base64};
+      const r=await post(body);
+      saida.innerHTML=aviso(`${r.validos} válidos · ${r.rejeitados} rejeitados · ${r.linhas.length-r.validos-r.rejeitados} repetidos`)+
+        tabelaFinanceira(['Linha','Título','Referência','Resultado','Saldo anterior','Novo saldo'],r.linhas.map(l=>[l.linha,esc(l.id_titulo),esc(l.referencia),esc(l.motivo||{VALIDO:'Válido',REPETIDO:'Já registrado'}[l.status]),reais(l.antes),reais(l.depois)]))+
+        (!r.rejeitados && r.validos ? '<button class="btn primary" id="retAplicar">Aplicar movimentos confirmados</button><div id="retErro"></div>' : '');
+      const aplicar=saida.querySelector('#retAplicar');
+      if(aplicar) aplicar.onclick=async()=>{
+        if(org!==cob.org || arquivo.files[0]!==file || !confirm(`Aplicar ${r.validos} movimentos confirmados na escola selecionada?`)) return;
+        aplicar.disabled=true;
+        try { const fim=await post({...body,token:r.token}); saida.innerHTML=aviso(`${fim.validos} movimentos registrados.`); }
+        catch(e) { msgErro(saida.querySelector('#retErro'),e); aplicar.disabled=false; }
+      };
+    } catch(e) { msgErro(saida,e); }
+    finally { btn.disabled=arquivo.disabled=false; }
+  };
+}
+
+async function paginaRelatorio(raiz) {
+  const org=cob.org, hoje=hojeISO();
+  raiz.innerHTML=cabecalho('Relatório para a escola','Carteira atual e recuperação confirmada no período. Filtre por unidade ou exporte a conciliação por título.')+
+    `<form class="cob-form-linha" id="relForm"><label class="cob-campo">De<input class="input" name="inicio" type="date" required value="${hoje.slice(0,7)}-01"></label>
+    <label class="cob-campo">Até<input class="input" name="fim" type="date" required value="${hoje}"></label>
+    <label class="cob-campo">Unidade<select class="input" name="unidade"><option value="">Todas as unidades autorizadas</option>${cob.ctx.unidades.map(u=>`<option value="${esc(u.id)}">${esc(u.nome)}</option>`).join('')}</select></label>
+    <button class="btn primary">Consultar</button></form><div id="relResultado"></div>`;
+  ligarSeletor('cobRelatorio');
+  const form=raiz.querySelector('#relForm'), saida=raiz.querySelector('#relResultado');
+  const atualizar=async()=>{
+    saida.innerHTML=aviso('Carregando…');
+    const query=new URLSearchParams(dadosForm(form));
+    try {
+      const r=await apiCob(`/api/cobranca/o/${org}/relatorio-financeiro?${query}`);
+      const indicadores=[
+        ['Títulos recebidos',r.titulos_recebidos],['Valor nominal da carteira',reais(r.valor_carteira_centavos)],['Saldo atual em aberto',reais(r.saldo_aberto_centavos)],
+        ['Responsáveis trabalhados',r.trabalhados],['Acordos aceitos',r.acordos],['Valor acordado',reais(r.acordado_centavos)],
+        ['Pagamentos confirmados',reais(r.recebidos_centavos)],['Estornos',reais(r.estornos_centavos)],['Recuperação líquida',reais(r.liquido_centavos)],
+      ];
+      const linhas=r.movimentos.map(m=>[dataBR(m.data),m.tipo==='ESTORNO'?'Estorno':'Pagamento',m.referencia,m.id_origem,m.unidade||'',m.valor_centavos,m.saldo_depois]);
+      const cols=['Data','Movimento','Referência','Título','Unidade','Valor','Saldo após movimento'];
+      saida.innerHTML=`<div class="cob-indicadores">${indicadores.map(([k,v])=>`<div class="card pad"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}</div>
+        <div class="card pad"><h3>Conciliação por título</h3><button class="btn" id="relCsv">Exportar CSV</button>
+        ${tabelaFinanceira(cols,linhas.map(l=>[...l.slice(0,5).map(esc),reais(l[5]),reais(l[6])]))}</div>`;
+      saida.querySelector('#relCsv').onclick=()=>downloadCsv('conciliacao-go-negocia.csv',[cols,...linhas.map(l=>[...l.slice(0,5),l[5]/100,l[6]/100])]);
+    } catch(e) { msgErro(saida,e); }
+  };
+  form.onsubmit=e=>{e.preventDefault();atualizar();};
+  await atualizar();
 }
 
 // O painel lateral é redesenhado a cada atualização da conversa; se a ficha sumir com os detalhes abertos,

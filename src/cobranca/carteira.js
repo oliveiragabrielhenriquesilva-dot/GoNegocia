@@ -12,7 +12,8 @@ export function estadoTitulo(t, org, dataHoje = hoje()) {
   if (t.ausente_desde_lote) alertas.push({ codigo: 'AUSENTE', texto: 'Não veio na última carteira — confirmar com a escola antes de negociar' });
   const idadeSaldo = diasEntre(t.saldo_referencia, dataHoje);
   if (t.situacao === 'ABERTO' && idadeSaldo > org.dias_saldo_valido) alertas.push({ codigo: 'DESATUALIZADO', texto: `Saldo de ${idadeSaldo} dias atrás — atualizar antes de negociar` });
-  const negociavel = t.situacao === 'ABERTO' && !t.bloqueio && !t.ausente_desde_lote;
+  if (t.em_acordo) alertas.push({ codigo: 'ACORDO', texto: 'Acordo aceito, aguardando confirmação do pagamento' });
+  const negociavel = t.situacao === 'ABERTO' && !t.bloqueio && !t.ausente_desde_lote && !t.em_acordo;
   return { negociavel, alertas, dias_atraso: t.situacao === 'ABERTO' ? Math.max(0, diasEntre(t.vencimento, dataHoje)) : 0, idade_saldo_dias: idadeSaldo };
 }
 
@@ -21,12 +22,12 @@ function publicoTitulo(t, org) {
     id: t.id, id_origem: t.id_origem, unidade_id: t.unidade_id, unidade_nome: t.unidade_nome || null,
     aluno_id: t.aluno_id, aluno_nome: t.aluno_nome, aluno_matricula: t.aluno_matricula,
     competencia: t.competencia, vencimento: t.vencimento, valor_centavos: t.valor_centavos, saldo_centavos: t.saldo_centavos,
-    situacao: t.situacao, bloqueio: t.bloqueio, saldo_referencia: t.saldo_referencia, ausente: Boolean(t.ausente_desde_lote),
+    situacao: t.situacao, em_acordo: Boolean(t.em_acordo), bloqueio: t.bloqueio, saldo_referencia: t.saldo_referencia, ausente: Boolean(t.ausente_desde_lote),
     ...estadoTitulo(t, org),
   };
 }
 
-const SQL_TITULOS = `SELECT t.*, a.nome AS aluno_nome, a.matricula AS aluno_matricula, u.nome AS unidade_nome
+const SQL_TITULOS = `SELECT t.*, EXISTS(SELECT 1 FROM acordos ac WHERE ac.titulo_id=t.id AND ac.status='ACEITO') em_acordo, a.nome AS aluno_nome, a.matricula AS aluno_matricula, u.nome AS unidade_nome
   FROM titulos t JOIN alunos a ON a.id=t.aluno_id LEFT JOIN unidades u ON u.id=t.unidade_id`;
 
 export function titulosDoResponsavel(escopo, responsavelId) {
@@ -124,7 +125,7 @@ export function detalheCaso(escopo, casoId) {
     totais: {
       saldo_negociavel_centavos: negociaveis.reduce((s, t) => s + t.saldo_centavos, 0),
       titulos_negociaveis: negociaveis.length,
-      titulos_pausados: titulos.filter(t => t.situacao === 'ABERTO' && !t.negociavel).length,
+      titulos_pausados: titulos.filter(t => t.situacao === 'ABERTO' && !t.negociavel && !t.em_acordo).length,
     },
   };
 }
@@ -217,7 +218,7 @@ export function distribuirCaso(escopo, usuario, casoId, atendenteId) {
 export function filaDeHoje(escopo, usuario, { unidadeId = '', atendente = '', atrasoMin = 0, incluirTravados = true } = {}, agora = Date.now()) {
   const dataHoje = hoje(agora);
   const f = filtroUnidade(escopo, 't.unidade_id');
-  const condT = [`t.organizacao_id=c.organizacao_id`, `t.responsavel_id=c.responsavel_id`, `t.situacao='ABERTO'`, `t.bloqueio IS NULL`, `t.ausente_desde_lote IS NULL`, f.sql];
+  const condT = [`t.organizacao_id=c.organizacao_id`, `t.responsavel_id=c.responsavel_id`, `t.situacao='ABERTO'`, `t.bloqueio IS NULL`, `t.ausente_desde_lote IS NULL`, `NOT EXISTS(SELECT 1 FROM acordos ac WHERE ac.titulo_id=t.id AND ac.status='ACEITO')`, f.sql];
   const paramsT = [...f.params];
   if (unidadeId) { condT.push('t.unidade_id=?'); paramsT.push(unidadeId); }
   const cond = ['c.organizacao_id=?', "c.status='ABERTO'", '(c.proxima_acao_em IS NULL OR c.proxima_acao_em<=?)', '(c.retorno_combinado_em IS NULL OR c.retorno_combinado_em<=?)'];

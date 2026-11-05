@@ -5,6 +5,7 @@ import { criarPrevia, aplicarLote, descartarLote, obterLote, listarLotes } from 
 import { listarCarteira, resumoCarteira, detalheCaso, assumirCaso, liberarCaso, registrarContato, distribuirCaso, filaDeHoje } from './carteira.js';
 import * as admin from './admin.js';
 import * as integ from './integracao.js';
+import * as financeiro from './financeiro.js';
 import { usuarioCobranca, ponte, modulosDe } from './ponte.js';
 import { varios, um, executar, auditar } from './db.js';
 
@@ -75,6 +76,7 @@ const soTodas = escopo => { if (!escopo.todasUnidades) throw new ErroHttp(403, '
 rotaOrg('GET', '/lotes', 'lotes.ver', ({ escopo }) => listarLotes(escopo));
 rotaOrg('POST', '/lotes', 'carteira.importar', ({ escopo, u, b }) => {
   soTodas(escopo);
+  if (b.tipo === 'RETORNO') return financeiro.importarRetorno(escopo, u, b);
   return criarPrevia({ escopo, usuario: u, arquivoNome: b.arquivo_nome, conteudo: Buffer.from(String(b.conteudo_base64 || ''), 'base64'), dataReferencia: b.data_referencia, tipo: b.tipo || 'CARTEIRA', escopoLote: b.escopo || 'COMPLETA' });
 });
 rotaOrg('GET', '/lotes/:id', 'lotes.ver', ({ escopo, p, q }) => obterLote(escopo, p.id, { status: q.get('status') || null }));
@@ -93,6 +95,19 @@ rotaOrg('POST', '/casos/:id/contato-ativo', 'conversa.enviar', ({ u, p, b }) => 
 rotaOrg('POST', '/casos/:id/pendencias', 'caso.trabalhar', ({ u, p, b }) => integ.criarPendenciaCobranca(u, p.org, p.id, b));
 rotaOrg('POST', '/pendencias/:pid/liberar', 'fila.distribuir', ({ u, p }) => integ.liberarTitulosDaPendencia(u, p.org, p.pid));
 rotaOrg('POST', '/teste/receber', 'teste.simular', ({ u, p, b }) => integ.simularRecebida(u, p.org, b));
+
+// Acordos, retorno financeiro e prestação de contas.
+rotaOrg('GET', '/regras-negociacao', 'caso.trabalhar', ({ escopo }) => financeiro.regras(escopo));
+rotaOrg('PUT', '/regras-negociacao', 'fila.distribuir', ({ escopo, u, b }) => financeiro.salvarRegras(escopo, u, b));
+rotaOrg('GET', '/acordos', 'caso.trabalhar', ({ escopo, q }) => financeiro.listarAcordos(escopo, {
+  casoId: q.get('caso') || null, pagina: Math.min(10000, Math.max(1, Math.trunc(Number(q.get('pagina'))) || 1)),
+}));
+rotaOrg('POST', '/casos/:id/acordos', 'caso.trabalhar', ({ escopo, u, p, b }) => financeiro.criarAcordo(escopo, u, p.id, b));
+rotaOrg('POST', '/acordos/:id', 'caso.trabalhar', ({ escopo, u, p, b }) => financeiro.mudarAcordo(escopo, u, p.id, b));
+rotaOrg('POST', '/retorno', 'carteira.importar', ({ escopo, u, b }) => financeiro.importarRetorno(escopo, u, b));
+rotaOrg('GET', '/relatorio-financeiro', 'carteira.ver', ({ escopo, q }) => financeiro.relatorioFinanceiro(
+  escopo, q.get('inicio') || '', q.get('fim') || '', q.get('unidade') || '',
+));
 
 // Conversa do Balbino (painel Cobrança)
 rota('GET', '/conversas/:cid', ({ u, p }) => integ.painelConversa(u, p.cid));

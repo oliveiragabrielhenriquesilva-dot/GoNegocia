@@ -30,3 +30,11 @@ O destino deve estar vazio. O migrador cria `data/balbino-chat.sqlite` e `data/c
 No ambiente novo, aponte `BALBINO_RUNTIME_DIR` para o destino. Confira `/healthz`, login, instituições, saldos, histórico e separação de escolas antes de promover. O retorno consiste em restaurar o commit anterior e a configuração original de runtime, preservados na migração.
 
 Mais detalhes sobre a implementação de origem em [COBRANCA-GO-NEGOCIA.md](COBRANCA-GO-NEGOCIA.md).
+
+## Acordos, baixas e relatórios
+
+- Em **Cobrança › Acordos e parcelas**, o administrador ou supervisor com acesso a todas as unidades configura os limites da escola. O padrão é uma parcela, sem desconto e sem entrada mínima. As exceções exigem aprovação de supervisor.
+- No **caso de cobrança**, assuma o caso para propor um acordo por título. Confirme a identidade do responsável na conversa e registre a referência do aceite. O acordo aceito retira o título da fila de negociação e as parcelas passam a ser acompanhadas no módulo de acordos.
+- Em **Cobrança › Retorno de pagamentos**, baixe o modelo CSV e preencha com dados confirmados pela escola. Use os cabeçalhos `id_titulo;referencia;tipo;data;valor;estorna`. Cada referência deve ser única na escola. Informe `PAGAMENTO` ou `ESTORNO`; para estorno, informe também a referência do pagamento original. Valor em reais, data no formato AAAA-MM-DD. Gere a prévia e aplique somente depois da conferência. O sistema aceita CSV e XLSX no formato do modelo.
+- Pagamentos parciais são alocados às parcelas na ordem de vencimento. Em acordos com desconto, o desconto é aplicado na quitação e revertido se um estorno reabrir o acordo. A baixa atualiza a carteira, sem gerar boleto, receber fundos ou consultar o banco.
+- Em **Cobrança › Relatório para a escola**, consulte a carteira atual e os acordos, valores recebidos e estornos do período. Filtre por unidade autorizada e exporte os movimentos por título em CSV.
