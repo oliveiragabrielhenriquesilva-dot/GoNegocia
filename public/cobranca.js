@@ -355,8 +355,9 @@ function ligarFormContato(raiz, casoId, recarregar) {
 // ---------- Painel "Cobrança" na ficha da conversa ----------
 export async function painelConversa(box, c) {
   if (!box || !c || c.isGroup || c.isChannel) return;
-  await carregarEu().catch(() => null);
-  if (!cob.eu || (!cob.eu.admin && !cob.eu.instituicoes.length)) return; // usuário sem cobrança: nada muda na ficha
+  const eu = await carregarEu().catch(() => null);
+  if (!box.isConnected || B().state.current?.id !== c.id) return;
+  if (!eu || eu.modulos?.cobranca === false || (!eu.admin && !eu.instituicoes.length)) return;
   box.querySelector('#cobPainel')?.remove();
   const el = document.createElement('div');
   el.id = 'cobPainel'; el.className = 'cob-painel';
@@ -365,7 +366,7 @@ export async function painelConversa(box, c) {
   let d;
   try { d = await apiCob(`/api/cobranca/conversas/${encodeURIComponent(c.id)}`); }
   catch (e) { el.innerHTML = '<div class="ficha-titulo"><b>Cobrança</b></div>' + aviso(e.message, 'erro'); return; }
-  if (B().state.current?.id !== c.id) return;
+  if (!el.isConnected || B().state.current?.id !== c.id) return;
   const recarregar = () => painelConversa(box, c);
   let html = '<div class="ficha-titulo"><b>Cobrança</b></div>';
   if (!d.aplicavel) html += `<div class="small muted">${esc(d.motivo)}</div>`;
@@ -396,7 +397,8 @@ export async function painelConversa(box, c) {
   }
   html += `<div class="small muted cob-breve">Acordos, parcelas e baixas: em desenvolvimento.</div>`;
   el.innerHTML = html;
-  $('#cobAssociar') && ($('#cobAssociar').onclick = async () => { try { await apiCob(`/api/cobranca/conversas/${c.id}/associar`, { method: 'POST', body: { organizacao_id: $('#cobAssocOrg').value } }); recarregar(); } catch (e) { B().toast(e.message, true); } });
+  const associar = el.querySelector('#cobAssociar');
+  if (associar) associar.onclick = async () => { try { await apiCob(`/api/cobranca/conversas/${c.id}/associar`, { method: 'POST', body: { organizacao_id: el.querySelector('#cobAssocOrg').value } }); recarregar(); } catch (e) { B().toast(e.message, true); } };
   el.querySelectorAll('[data-abrir-caso]').forEach(b => b.onclick = () => abrirCaso(b.dataset.abrirCaso, c.id, b.dataset.org));
   el.querySelectorAll('.cob-verif').forEach(v => {
     const inst = d.instituicoes[Number(v.dataset.i)];
