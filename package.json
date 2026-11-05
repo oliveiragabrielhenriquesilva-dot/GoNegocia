@@ -1,6 +1,6 @@
 {
   "name": "go-negocia",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "type": "module",
   "engines": {
@@ -13,7 +13,7 @@
     "test:cobranca": "node --disable-warning=ExperimentalWarning --test --test-concurrency=1 test/cobranca.test.js",
     "seed:cobranca": "node --disable-warning=ExperimentalWarning scripts/cobranca-seed-demo.js",
     "migrar:go": "node scripts/migrar-go-negocia.js",
-    "test": "npm run test:cobranca"
+    "test": "node --disable-warning=ExperimentalWarning --test --test-concurrency=1 test/*.test.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",

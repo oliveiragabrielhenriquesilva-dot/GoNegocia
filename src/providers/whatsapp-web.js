@@ -18,11 +18,56 @@ const openSockets=new Set();
 const reconnectTimers=new Map();
 const connectPromises=new Map();
 function clearReconnectTimer(instanceId){const t=reconnectTimers.get(instanceId);if(t){clearTimeout(t);reconnectTimers.delete(instanceId)}}
-function scheduleReconnect(instanceId,delayMs,reason='UNKNOWN'){
-  clearReconnectTimer(instanceId);
-  const timer=setTimeout(()=>{reconnectTimers.delete(instanceId);connectInstance(instanceId).catch(e=>{const conn=all().connections.find(c=>c.id===instanceId);let nextDelay=5000;if(conn){const attempt=Number(conn.reconnectAttemptCount||0)+1;conn.reconnectAttemptCount=attempt;conn.lastError={status:null,message:e.message,at:Date.now()};conn.state='RECONNECTING';nextDelay=Math.min(5000*2**Math.min(attempt-1,4),60000);save();emit('connection.update',conn)}pushLog('CONNECTION_RECONNECT_ERROR',{instanceId,reason,error:String(e?.message||e),retryInMs:conn?nextDelay:null});if(conn)scheduleReconnect(instanceId,nextDelay,'START_FAILED')})},Math.max(500,Number(delayMs)||1500));
-  reconnectTimers.set(instanceId,timer);
-  pushLog('CONNECTION_RECONNECT_SCHEDULED',{instanceId,delayMs:Math.max(500,Number(delayMs)||1500),reason});
+function reconnectDelayFor(attempt, baseMs = 5000) {
+  return Math.min(baseMs * 2 ** Math.min(attempt - 1, 6), 60000);
+}
+
+function markReconnecting(conn) {
+  conn.state = 'RECONNECTING';
+  conn.reconnectingSince ||= Date.now();
+  conn.reconnectAttemptCount = Number(conn.reconnectAttemptCount || 0) + 1;
+  return conn.reconnectAttemptCount;
+}
+
+function handleStartFailure(conn, reason, error) {
+  if (!conn || !all().connections.includes(conn) || conn.reconnectPaused || error?.name === 'AbortError' ||
+      ['CONNECTED', 'EXPIRED', 'QR_REQUIRED'].includes(conn.state)) return;
+  const nextDelay = reconnectDelayFor(markReconnecting(conn));
+  const message = String(error?.message || error);
+  conn.lastEventAt = Date.now();
+  conn.lastError = { status: null, message, at: conn.lastEventAt };
+  save();
+  emit('connection.update', conn);
+  pushLog('CONNECTION_RECONNECT_ERROR', { instanceId: conn.id, reason, error: message, retryInMs: nextDelay });
+  scheduleReconnect(conn, nextDelay, 'START_FAILED');
+}
+
+function scheduleReconnect(conn, delayMs, reason) {
+  const { id } = conn;
+  clearReconnectTimer(id);
+  const timer = setTimeout(() => {
+    reconnectTimers.delete(id);
+    if (!all().connections.includes(conn) || conn.reconnectPaused ||
+        ['EXPIRED', 'QR_REQUIRED', 'CONNECTED'].includes(conn.state)) return;
+    connectInstance(id).catch(error => handleStartFailure(conn, reason, error));
+  }, delayMs);
+  reconnectTimers.set(id, timer);
+  pushLog('CONNECTION_RECONNECT_SCHEDULED', { instanceId: id, delayMs, reason });
+}
+
+export async function restoreWhatsAppSession(conn) {
+  if (conn.reconnectPaused || conn.state === 'EXPIRED') return;
+  // O processo novo ainda não tem um socket, mesmo que a sessão tenha sido salva como conectada.
+  if (!runtimeSocketReady(conn.id)) {
+    conn.state = 'RECONNECTING';
+    conn.reconnectingSince ||= Date.now();
+  }
+  try {
+    await connectInstance(conn.id);
+    pushLog('AUTO_CONNECT_REQUESTED', { instanceId: conn.id });
+  } catch (error) {
+    handleStartFailure(conn, 'AUTO_CONNECT', error);
+  }
 }
 function noteWhatsAppActivity(instanceId){whatsappActivityAt.set(instanceId,Date.now())}
 function runtimeSocketReady(instanceId){
@@ -763,7 +808,7 @@ async function consumePollUpdateEnvelope(baileys,sock,instanceId,msg){
   applyDecodedPollUpdates(baileys,sock,instanceId,rec,[update]);pushLog('POLL_VOTE_DECRYPTED',{instanceId,updateId:msg?.key?.id||null,pollId,creator:usedCreator,voter:usedVoter});return true;
 }
 
-async function connectInstanceOnce(instanceId='principal'){
+async function connectInstanceOnce(instanceId, signal){
   const db=all();let conn=db.connections.find(c=>c.id===instanceId);
   const existing=sockets.get(instanceId);
   if(existing){
@@ -773,6 +818,7 @@ async function connectInstanceOnce(instanceId='principal'){
   }
   if(!conn){conn={id:instanceId,name:instanceId,phone:'',state:'DISCONNECTED',qr:null,lastEventAt:null,connectedAt:null};db.connections.push(conn);save()}
   let baileys,QRCode;try{baileys=await import('@whiskeysockets/baileys');QRCode=(await import('qrcode')).default}catch{throw new Error('Conector WhatsApp não instalado. Execute: npm run install:whatsapp')}
+  signal.throwIfAborted();
   const makeWASocket=baileys.default;const{useMultiFileAuthState,DisconnectReason,Browsers}=baileys;
   const authDir=path.join(sessionsDir,instanceId);
   // Se o WhatsApp marcou a credencial como expirada/logged out (401), uma nova
@@ -785,7 +831,15 @@ async function connectInstanceOnce(instanceId='principal'){
     conn.phone='';conn.qr=null;conn.connectedAt=null;conn.lastError=null;
   }
   fs.mkdirSync(authDir,{recursive:true});const{state,saveCreds}=await useMultiFileAuthState(authDir);
-  conn.state='CONNECTING';conn.lastError=null;conn.lastEventAt=Date.now();save();emit('connection.update',conn);pushLog('CONNECTION_CONNECTING',{instanceId});
+  signal.throwIfAborted();
+  if (!conn.reconnectingSince) {
+    conn.state = 'CONNECTING';
+    conn.lastError = null;
+  }
+  conn.lastEventAt = Date.now();
+  save();
+  emit('connection.update', conn);
+  pushLog('CONNECTION_CONNECTING', { instanceId });
   // v0.5.22: no Baileys 7 usamos a versão de protocolo embutida/testada pelo próprio pacote.
   // Evita alternar para uma versão Web mais antiga em uma reconexão, cenário que pode causar loops 408.
   conn.waVersion='BAILEYS_DEFAULT';
@@ -819,12 +873,20 @@ async function connectInstanceOnce(instanceId='principal'){
   });
   sockets.set(instanceId,sock);sock.ev.on('creds.update',saveCreds);
   sock.ev.on('connection.update',async u=>{
-    if(u.connection==='close'&&sockets.get(instanceId)!==sock)return;
+    if(sockets.get(instanceId)!==sock)return;
     conn.lastEventAt=Date.now();
-    if(u.qr){conn.qr=await QRCode.toDataURL(u.qr);conn.state='QR_REQUIRED';pushLog('CONNECTION_QR_REQUIRED',{instanceId})}
+    if (u.qr) {
+      const qr = await QRCode.toDataURL(u.qr);
+      if (sockets.get(instanceId) !== sock || openSockets.has(instanceId)) return;
+      conn.qr = qr;
+      conn.state = 'QR_REQUIRED';
+      conn.reconnectingSince = null;
+      pushLog('CONNECTION_QR_REQUIRED', { instanceId });
+    }
     if(u.connection==='open'){
       openSockets.add(instanceId);clearReconnectTimer(instanceId);
-      conn.state='CONNECTED';conn.qr=null;conn.lastError=null;conn.connectedAt=Date.now();conn.phone=phoneFromJid(sock.user?.id||'');conn.reconnect428Count=0;conn.reconnectAttemptCount=0;conn.sync428Attempts=0;registerConnectionSelfIdentity(instanceId,{profileName:sock.user?.name||'',phone:conn.phone,source:'socket-open'});try{repairMultiConnectionData({reason:`connection-open:${instanceId}`,mergeConversations:false})}catch(e){pushLog('MULTICONNECTION_REPAIR_ERROR',{instanceId,error:String(e?.message||e)})}pushLog('CONNECTION_CONNECTED',{instanceId,phone:conn.phone,profileName:sock.user?.name||null});if(all().settings.syncGroupsOnConnect!==false)setTimeout(()=>refreshGroupsFromSocket(sock,instanceId).catch(()=>{}),2500);if(all().settings.syncChannelsOnConnect!==false)setTimeout(()=>refreshKnownChannels(sock,instanceId).catch(()=>{}),4000);if(conn.syncRequested){updateSyncState(conn,{status:'WAITING_PHONE',connectedAt:Date.now(),note:'Aguardando o WhatsApp disponibilizar contatos e histórico.'});setTimeout(()=>{if(conn.syncRequested&&['WAITING_PHONE','STARTING','RECEIVING'].includes(conn.sync?.status)){const got=Number(conn.sync?.chunks||0)>0;conn.syncRequested=false;updateSyncState(conn,{status:got?'PARTIAL':'NO_DATA',completedAt:Date.now(),note:got?'O WhatsApp enviou parte do histórico disponível.':'O WhatsApp não disponibilizou novos dados nesta tentativa. Tente novamente mais tarde ou após religar o aparelho principal.'})}},60000)}
+      conn.reconnectingSince = null;
+      conn.state='CONNECTED';conn.qr=null;conn.lastError=null;conn.connectedAt=Date.now();conn.phone=phoneFromJid(sock.user?.id||'');conn.reconnectAttemptCount=0;conn.sync428Attempts=0;registerConnectionSelfIdentity(instanceId,{profileName:sock.user?.name||'',phone:conn.phone,source:'socket-open'});try{repairMultiConnectionData({reason:`connection-open:${instanceId}`,mergeConversations:false})}catch(e){pushLog('MULTICONNECTION_REPAIR_ERROR',{instanceId,error:String(e?.message||e)})}pushLog('CONNECTION_CONNECTED',{instanceId,phone:conn.phone,profileName:sock.user?.name||null});if(all().settings.syncGroupsOnConnect!==false)setTimeout(()=>refreshGroupsFromSocket(sock,instanceId).catch(()=>{}),2500);if(all().settings.syncChannelsOnConnect!==false)setTimeout(()=>refreshKnownChannels(sock,instanceId).catch(()=>{}),4000);if(conn.syncRequested){updateSyncState(conn,{status:'WAITING_PHONE',connectedAt:Date.now(),note:'Aguardando o WhatsApp disponibilizar contatos e histórico.'});setTimeout(()=>{if(conn.syncRequested&&['WAITING_PHONE','STARTING','RECEIVING'].includes(conn.sync?.status)){const got=Number(conn.sync?.chunks||0)>0;conn.syncRequested=false;updateSyncState(conn,{status:got?'PARTIAL':'NO_DATA',completedAt:Date.now(),note:got?'O WhatsApp enviou parte do histórico disponível.':'O WhatsApp não disponibilizou novos dados nesta tentativa. Tente novamente mais tarde ou após religar o aparelho principal.'})}},60000)}
       reassignOrphanConversations(instanceId);
       for(const queued of all().messages.filter(m=>m.direction==='OUT'&&m.status==='QUEUED')){
         const cv=all().conversations.find(c=>c.id===queued.conversationId&&c.instanceId===instanceId);if(!cv)continue;const ct=all().contacts.find(c=>c.id===cv.contactId);if(!ct)continue;
@@ -841,7 +903,10 @@ async function connectInstanceOnce(instanceId='principal'){
       const canReconnect=!loggedOut&&(is428||status===DisconnectReason?.connectionLost||status===DisconnectReason?.timedOut||status===DisconnectReason?.restartRequired||status===DisconnectReason?.unavailableService||status==null);
       conn.lastError={status,message,at:Date.now()};
       sockets.delete(instanceId);
-      let reconnectDelay=is428?1800:3500,reconnectReason=is428?'428':'CONNECTION_CLOSED';
+      conn.qr = null;
+      const attempt = canReconnect ? markReconnecting(conn) : 0;
+      let reconnectDelay = canReconnect ? reconnectDelayFor(attempt, is428 ? 1500 : 3500) : null;
+      let reconnectReason = is428 ? '428' : 'CONNECTION_CLOSED';
       if(is428&&conn.syncRequested){
         // v0.5.20: um 428 durante sincronização encerra APENAS a sincronização.
         // Não insistimos em syncFullHistory, pois o atendimento normal tem prioridade.
@@ -850,15 +915,14 @@ async function connectInstanceOnce(instanceId='principal'){
         reconnectDelay=1200;reconnectReason='HISTORY_SYNC_428_FALLBACK_IMMEDIATE';
         pushLog('HISTORY_SYNC_428_FALLBACK_IMMEDIATE',{instanceId,status});
       }else{
-        if(is428){
-          const count=Number(conn.reconnect428Count||0)+1;conn.reconnect428Count=count;
-          reconnectDelay=Math.min(1500+(count-1)*1500,9000);
-          reconnectReason=`428_${count}`;
-        }else{conn.sync428Attempts=0;conn.reconnect428Count=0}
-        conn.state=loggedOut?'EXPIRED':canReconnect?'RECONNECTING':'ERROR';
+        if (!is428) conn.sync428Attempts = 0;
+        if (!canReconnect) {
+          conn.state = loggedOut ? 'EXPIRED' : 'ERROR';
+          conn.reconnectingSince = null;
+        }
       }
       pushLog('CONNECTION_CLOSED',{instanceId,status,message,loggedOut,canReconnect,syncRequested:Boolean(conn.syncRequested),reconnectDelay});
-      if(canReconnect)scheduleReconnect(instanceId,reconnectDelay,reconnectReason)
+      if(canReconnect)scheduleReconnect(conn,reconnectDelay,reconnectReason)
     }
     save();emit('connection.update',conn)
   });
@@ -1034,14 +1098,21 @@ async function connectInstanceOnce(instanceId='principal'){
   return sock;
 }
 
-export function connectInstance(instanceId='principal'){
-  const active=connectPromises.get(instanceId);
-  if(active)return active;
-  const pending=connectInstanceOnce(instanceId).finally(()=>{
-    if(connectPromises.get(instanceId)===pending)connectPromises.delete(instanceId);
+export function connectInstance(instanceId = 'principal') {
+  const active = connectPromises.get(instanceId);
+  if (active) return active.promise;
+  clearReconnectTimer(instanceId);
+  const conn = all().connections.find(c => c.id === instanceId);
+  if (conn?.reconnectPaused) {
+    conn.reconnectPaused = false;
+    save();
+  }
+  const controller = new AbortController();
+  const promise = connectInstanceOnce(instanceId, controller.signal).finally(() => {
+    if (connectPromises.get(instanceId)?.promise === promise) connectPromises.delete(instanceId);
   });
-  connectPromises.set(instanceId,pending);
-  return pending;
+  connectPromises.set(instanceId, { promise, controller });
+  return promise;
 }
 
 function flowTextFallback(config){
@@ -1154,7 +1225,31 @@ export async function testInteractiveCapabilities(instanceId='principal'){
   conn.interactiveCapabilities={...capabilityState(conn),...results,lastTestAt:Date.now()};save();emit('connection.update',conn);return conn.interactiveCapabilities;
 }
 
-export async function disconnectInstance(instanceId='principal',logout=false){const sock=sockets.get(instanceId),conn=all().connections.find(c=>c.id===instanceId);openSockets.delete(instanceId);if(sock){try{if(logout)await sock.logout();else sock.end?.(new Error('Disconnected by Balbino Chat'))}catch{}sockets.delete(instanceId)}if(conn){conn.state='DISCONNECTED';conn.qr=null;conn.lastEventAt=Date.now();save();emit('connection.update',conn)}pushLog('CONNECTION_DISCONNECTED',{instanceId,logout})}
+export async function disconnectInstance(instanceId = 'principal', logout = false, { shutdown = false } = {}) {
+  const sock = sockets.get(instanceId), conn = all().connections.find(c => c.id === instanceId);
+  clearReconnectTimer(instanceId);
+  connectPromises.get(instanceId)?.controller.abort();
+  connectPromises.delete(instanceId);
+  sockets.delete(instanceId);
+  openSockets.delete(instanceId);
+  if (conn && (!shutdown || ['CONNECTED', 'CONNECTING', 'QR_REQUIRED'].includes(conn.state))) {
+    if (!shutdown) conn.reconnectPaused = true;
+    conn.state = logout || conn.state === 'EXPIRED' ? 'EXPIRED' : 'DISCONNECTED';
+    conn.qr = null;
+    conn.reconnectingSince = null;
+    conn.reconnectAttemptCount = 0;
+    conn.lastEventAt = Date.now();
+    save();
+    emit('connection.update', conn);
+  }
+  if (sock) {
+    try {
+      if (logout) await sock.logout();
+      else sock.end?.(new Error('Conexão encerrada pela aplicação'));
+    } catch {}
+  }
+  pushLog('CONNECTION_DISCONNECTED', { instanceId, logout, shutdown });
+}
 
 export async function deleteInstance(instanceId='principal'){
   const db=all(),conn=db.connections.find(c=>c.id===instanceId);

@@ -7,7 +7,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
 import { all, save, flush, uid, pushLog, addMessage, reset, replaceAll, removeContact, removeConversation, upsertContactByPhone, ensureConversation, databaseInfo, messagesForConversation, pagedMessages, conversationMessageSummary, findMessageById, handleInboundConversationState, createOperationalReset, isOperationalConversation, repairMultiConnectionData, getOpenConversation } from './src/store.js';
-import { connectInstance, disconnectInstance, sendText, sendChannelUpdate, checkWhatsAppNumber, isWhatsAppReady, editText, sendMedia, sendContact, sendReaction, sendPoll, markRead, setTyping, registerEmitter, requestWhatsAppSync, cancelWhatsAppSync, getWhatsAppSyncState, syncWhatsAppGroups, syncWhatsAppChannels, refreshWhatsAppChannel, syncWhatsAppContactPhotos, getWhatsAppContactPhotoSyncState, cancelWhatsAppContactPhotoSync, testInteractiveCapabilities, deleteInstance } from './src/providers/whatsapp-web.js';
+import { connectInstance, restoreWhatsAppSession, disconnectInstance, sendText, sendChannelUpdate, checkWhatsAppNumber, isWhatsAppReady, editText, sendMedia, sendContact, sendReaction, sendPoll, markRead, setTyping, registerEmitter, requestWhatsAppSync, cancelWhatsAppSync, getWhatsAppSyncState, syncWhatsAppGroups, syncWhatsAppChannels, refreshWhatsAppChannel, syncWhatsAppContactPhotos, getWhatsAppContactPhotoSyncState, cancelWhatsAppContactPhotoSync, testInteractiveCapabilities, deleteInstance } from './src/providers/whatsapp-web.js';
 import { publicOfficialConnection, testOfficialConnection, fetchOfficialTemplates, sendOfficialText, sendOfficialMedia, sendOfficialTemplate } from './src/providers/whatsapp-cloud.js';
 import { assignConversation } from './src/automation-engine.js';
 import { dataDir, uploadsDir, sessionsDir, backupsDir, uploadDiskPath } from './src/runtime-paths.js';
@@ -27,7 +27,7 @@ function loadEnvFile(){try{const f=path.join(__dirname,'.env');if(!fs.existsSync
 loadEnvFile();
 const PORT=Number(process.env.PORT||3001);
 const HOST=process.env.HOST||'0.0.0.0';
-const APP_VERSION='0.4.0';
+const APP_VERSION='0.4.1';
 const ADMIN_USER=String(process.env.GOCHAT_ADMIN_USER||process.env.GO_NEGOCIA_ADMIN_LOGIN||'admin').trim().toLowerCase();
 const ADMIN_PASSWORD=String(process.env.GOCHAT_ADMIN_PASSWORD||process.env.GO_NEGOCIA_ADMIN_SENHA||'');
 const publicDir=path.join(__dirname,'public');
@@ -672,7 +672,7 @@ function hasStoredWhatsAppAuth(instanceId){
 }
 async function autoConnectStoredWhatsAppSessions(){
   if(all().settings.autoConnectWhatsApp===false){pushLog('AUTO_CONNECT_SKIPPED',{reason:'SETTING_DISABLED'});return}
-  const candidates=all().connections.filter(c=>c.state!=='EXPIRED'&&hasStoredWhatsAppAuth(c.id));
+  const candidates=all().connections.filter(c=>!c.reconnectPaused&&c.state!=='EXPIRED'&&hasStoredWhatsAppAuth(c.id));
   if(!candidates.length){pushLog('AUTO_CONNECT_SKIPPED',{reason:'NO_STORED_SESSION'});return}
   pushLog('AUTO_CONNECT_START',{instances:candidates.map(c=>c.id)});
   for(const c of candidates){
@@ -688,8 +688,7 @@ async function autoConnectStoredWhatsAppSessions(){
         }
         save();pushLog('AUTO_CONNECT_STALE_SYNC_CLEARED',{instanceId:c.id});
       }
-      await connectInstance(c.id);
-      pushLog('AUTO_CONNECT_REQUESTED',{instanceId:c.id});
+      await restoreWhatsAppSession(c);
     }catch(e){
       pushLog('AUTO_CONNECT_ERROR',{instanceId:c.id,error:e.message});
     }
@@ -705,7 +704,7 @@ async function gracefulShutdown(signal, exitProcess=true){
   if(shuttingDown)return;shuttingDown=true;
   console.log(`Encerrando Balbino Chat com segurança (${signal})...`);
   try{pushLog('SERVER_SHUTDOWN',{signal,at:Date.now()});save();flush()}catch{}
-  try{await Promise.allSettled((all().connections||[]).map(c=>disconnectInstance(c.id,false)))}catch{}
+  try{await Promise.allSettled((all().connections||[]).map(c=>disconnectInstance(c.id,false,{shutdown:true})))}catch{}
   try{flush()}catch{}
   if(server.listening)await new Promise(resolve=>server.close(resolve));
   if(exitProcess){setTimeout(()=>process.exit(0),8000).unref?.();process.exit(0)}
@@ -719,7 +718,11 @@ async function iniciarServicos(){
   if(!ADMIN_PASSWORD)console.warn('ATENÇÃO: altere GOCHAT_ADMIN_PASSWORD antes de produção.');
   if(marcaAtual()&&process.env.GO_NEGOCIA_ENVIO_REAL!=='1')return;
   const forced=process.env.GOCHAT_AUTO_CONNECT;
-  if(forced){setTimeout(()=>connectInstance(forced).catch(e=>pushLog('AUTO_CONNECT_ERROR',{instanceId:forced,error:e.message})),700)}
+  if(forced){setTimeout(()=>{
+    const conn=all().connections.find(c=>c.id===forced);
+    const attempt=conn&&hasStoredWhatsAppAuth(forced) ? restoreWhatsAppSession(conn) : connectInstance(forced);
+    attempt.catch(e=>pushLog('AUTO_CONNECT_ERROR',{instanceId:forced,error:e.message}));
+  },700)}
   else setTimeout(()=>autoConnectStoredWhatsAppSessions().catch(e=>pushLog('AUTO_CONNECT_ERROR',{instanceId:'*',error:e.message})),900);
 }
 
