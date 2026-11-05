@@ -1,635 +1,1352 @@
-// GO Negocia — interface (JS puro, sem build). Todo texto vindo do servidor entra via textContent (sem innerHTML).
-
-// Marca: ponto único (arquivos em /brand, ver public/brand/LEIA-ME.md).
-const MARCA = {
-  nome: 'GO Negocia',
-  assinatura: 'Atendimento financeiro para escolas',
-  logo: '/brand/logo-go-negocia.png',
-  logoNegativo: '/brand/logo-go-negocia-negativo.png',
-  monogramaNegativo: '/brand/monograma-go-negativo.png',
+const state={me:null,appearance:{theme:'dark',accent:'#2563eb',sidebar:'#0f2f5f'},notifications:{desktop:true,sound:true,whenActive:false,audioReady:false},conversations:[],allConversations:[],conversationStats:{ALL:0,UNREAD:0,MINE:0,WAITING:0,GROUPS:0,HISTORY:0,CLOSED:0},current:null,currentLock:null,contacts:[],groups:[],team:{users:[],departments:[],connections:[],groups:[]},accessCatalog:{connections:[],groups:[],departments:[],loaded:false,error:null,generatedAt:null},deals:[],followups:[],scheduled:[],automations:[],connections:[],settings:{},systemInfo:null,messages:[],messagePaging:{hasMore:false,oldestAt:null,loading:false},knowledge:[],quickReplies:[],filter:'ALL',communityType:'ALL',realtime:{connected:false,lastEventAt:0},presence:{jid:null,typing:false,participants:[]},replyTo:null,typingTimer:null,mediaRecorder:null,recordChunks:[],pendingFiles:[],composeMode:'message',adminOwnerFilter:'',adminQueueFilter:'',officialConnections:[],officialTemplates:[],contactLists:[],campaigns:[],campaignWizard:null,metaEmbeddedConfig:null,metaEmbeddedSession:null,metaEmbeddedCode:null,metaEmbeddedCompleting:false,flowVisualDraft:[],flowVisualLayout:{},flowZoom:1,flowSettingsLoaded:false,conversationSubfilter:'ALL',pinnedConversationId:null};
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+async function api(url,opts={}){const o={credentials:'same-origin',...opts,headers:{...(opts.headers||{})}};if(o.body&&!(o.body instanceof FormData)&&typeof o.body!=='string'){o.headers['Content-Type']='application/json';o.body=JSON.stringify(o.body)}const r=await fetch(url,o);let data={};try{data=await r.json()}catch{}if(r.status===401){showLogin();throw new Error('Faça login novamente')}if(!r.ok)throw new Error(data.error||`Erro ${r.status}`);return data}
+function toast(msg,bad=false){const t=$('#toast');t.textContent=msg;t.classList.toggle('error',!!bad);t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2400)}
+function esc(v=''){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function fmtDate(v){if(!v)return'—';const d=new Date(v);return d.toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:d.getFullYear()!==new Date().getFullYear()?'2-digit':undefined,hour:'2-digit',minute:'2-digit'})}
+function fmtDuration(sec=0){sec=Math.max(0,Number(sec)||0);if(sec<60)return`${sec}s`;if(sec<3600)return`${Math.floor(sec/60)}m ${sec%60}s`;return`${Math.floor(sec/3600)}h ${Math.round((sec%3600)/60)}m`}
+function fmtPhone(p=''){const s=String(p).replace(/\D/g,'');if(s.length===13)return`+${s.slice(0,2)} (${s.slice(2,4)}) ${s.slice(4,9)}-${s.slice(9)}`;if(s.length===12)return`+${s.slice(0,2)} (${s.slice(2,4)}) ${s.slice(4,8)}-${s.slice(8)}`;return s?`+${s}`:'—'}
+const PT_LABELS={
+  SUPER_ADMIN:'Administrador geral',SUPERVISOR:'Supervisor',AGENT:'Atendente',
+  ONLINE:'Disponível',OFFLINE:'Desconectado',AWAY:'Ausente',
+  ROUND_ROBIN:'Rodízio entre atendentes',LEAST_BUSY:'Menor carga de atendimentos',
+  NOVO_LEAD:'Novo contato',CONTATO:'Contato realizado',INTERESSADO:'Interessado',PROPOSTA:'Proposta enviada',NEGOCIACAO:'Negociação',VENDA:'Venda',CLIENTE:'Cliente',PERDIDO:'Perdido',
+  NORMAL:'Normal',HIGH:'Alta',LOW:'Baixa',
+  PENDING:'Pendente',DONE:'Concluído',DUE:'Atrasado',SENT:'Enviada',FAILED:'Falha',
+  CONNECTED:'Conectado',CONNECTING:'Conectando',RECONNECTING:'Reconectando',QR_REQUIRED:'QR necessário',DISCONNECTED:'Desconectado',EXPIRED:'Sessão expirada',ERROR:'Erro',
+  IDLE:'Parado',STARTING:'Iniciando',WAITING_PHONE:'Aguardando WhatsApp',RECEIVING:'Recebendo histórico',RETRYING:'Tentando novamente',COMPLETED:'Concluído',PARTIAL:'Concluído parcialmente',NO_DATA:'Sem novos dados',CANCELLED:'Cancelado',INTERRUPTED:'Interrompido',RUNNING:'Em andamento',
+  SUPPORTED:'Disponível',UNSUPPORTED:'Indisponível',UNKNOWN:'Desconhecido',
+  GROUP:'Grupo',CHANNEL:'Canal',ALL:'Todos'
 };
+function ptLabel(v){return PT_LABELS[String(v??'')]||String(v??'—')}
+function automationRuleLabel(v=''){let x=String(v||'');const rules=[[/^FIRST_CONTACT$/,'Primeiro contato'],[/^OUT_OF_HOURS$/,'Fora do horário'],[/^CONVERSATION_CLOSED$/,'Atendimento finalizado'],[/^KEYWORD:(.*)$/,'Palavra-chave: $1'],[/^SEND_WELCOME$/,'Enviar boas-vindas'],[/^SEND_AWAY$/,'Enviar mensagem fora do horário'],[/^SEND_CSAT$/,'Enviar pesquisa de satisfação'],[/^MOVE:(.*)$/,'Mover para setor: $1'],[/^TAG:(.*)$/,'Adicionar marcador: $1'],[/^PRIORITY:HIGH$/,'Definir prioridade: Alta'],[/^PRIORITY:LOW$/,'Definir prioridade: Baixa'],[/^ASSIGN:(.*)$/,'Atribuir ao usuário: $1'],[/^SEND:(.*)$/,'Enviar mensagem: $1']];for(const [re,label] of rules){if(re.test(x))return x.replace(re,label)}return x}
 
-const estado = { eu: null, orgId: null, ctx: null };
-const raiz = document.getElementById('raiz');
+function initials(n=''){return n.split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase()||'--'}
+function avatarMarkup(c){const src=c?.contact?.avatar||c?.group?.avatar||c?.avatar;if(src)return `<img src="${esc(src)}" alt="">`;if(c?.isGroup)return '👥';return esc(initials(c?.contact?.name||c?.name||''))}
+function setAvatar(el,c){if(!el)return;el.innerHTML=avatarMarkup(c);el.classList.toggle('has-photo',Boolean(c?.contact?.avatar||c?.avatar))}
+function conversationQueue(c={}){return c?.department||state.team?.departments?.find?.(d=>d.id===c?.departmentId)||null}
+function queueTone(c={}){const d=conversationQueue(c),key=String(d?.id||d?.name||c?.departmentId||'fila');let n=0;for(let i=0;i<key.length;i++)n=(n*31+key.charCodeAt(i))>>>0;return`tone-${n%6}`}
+function queueBadgeHtml(c={},prefix='Fila'){const d=conversationQueue(c);if(!d?.name)return'<span class="conv-queue-badge tone-empty">Fila • Sem fila</span>';return`<span class="conv-queue-badge ${queueTone(c)}">${esc(prefix)} • ${esc(d.name)}</span>`}
+function isPhantomMessage(x){const body=String(x?.body||'').trim().toLowerCase();return x?.type==='TEXT'&&!x?.file&&(!body||body==='[text]'||body==='[text do histórico]'||body==='[text do historico]')}
+function previewText(messageItem){if(!messageItem)return'Sem mensagens';if(isPhantomMessage(messageItem))return'Atualização do WhatsApp';if(messageItem.type==='STICKER')return'🖼 Figurinha';if(messageItem.type==='IMAGE')return'📷 Imagem';if(messageItem.type==='VIDEO')return'🎥 Vídeo';if(messageItem.type==='AUDIO')return'🎤 Áudio';if(messageItem.type==='DOCUMENT')return'📎 Documento';if(messageItem.type==='POLL')return'📊 '+String(messageItem.body||'Enquete').split('\n')[0];if(messageItem.type==='POLL_UPDATE')return'📊 Enquete atualizada';return String(messageItem.body||'Sem mensagens').replace(/\s*\n\s*/g,' • ')}
+function currentConversationJid(c=state.current){return c?.group?.jid||c?.channel?.jid||c?.contact?.whatsappJid||c?.contact?.whatsappJidAlt||null}
+function updateTypingIndicator(){const el=$('#chatTyping');if(!el)return;const match=state.current&&state.presence.typing&&state.presence.jid&&[currentConversationJid(state.current),state.current?.contact?.whatsappJidAlt].filter(Boolean).includes(state.presence.jid);el.textContent=match?(state.current?.isGroup?'Alguém está digitando…':'digitando…'):'';el.classList.toggle('active',Boolean(match))}
+function closeMobileNav(){document.body.classList.remove('mobile-nav-open')}
+function closeDetails(){document.querySelector('.inbox')?.classList.remove('show-details')}
+function syncConversationExpanded(persist=true){const box=document.querySelector('.inbox'),btn=$('#expandChatBtn');if(box)box.classList.toggle('conversation-expanded',conversationExpanded);if(btn){btn.classList.toggle('active',conversationExpanded);btn.textContent=conversationExpanded?'↔ Voltar':'↔ Expandir';btn.title=conversationExpanded?'Voltar à lista de conversas':'Expandir área da conversa'}if(conversationExpanded)closeDetails();if(persist){try{localStorage.setItem('balbino-chat-conversation-expanded',conversationExpanded?'1':'0')}catch{}}}
+function initConversationExpanded(){try{conversationExpanded=(localStorage.getItem('balbino-chat-conversation-expanded')||'0')==='1'}catch{}syncConversationExpanded(false)}
+function toggleConversationExpanded(){conversationExpanded=!conversationExpanded;syncConversationExpanded()}
 
-// ---------- utilidades ----------
-function h(tag, attrs = {}, ...filhos) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs || {})) {
-    if (v == null || v === false) continue;
-    if (k === 'class') el.className = v;
-    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-    else if (k === 'value') el.value = v;
-    else el.setAttribute(k, v === true ? '' : v);
-  }
-  for (const f of filhos.flat(Infinity)) if (f != null && f !== false) el.append(f instanceof Node ? f : String(f));
-  return el;
+
+/* Balbino Chat v0.6.5 — enquetes sem eventos técnicos */
+let bcUiZoom=100,bcSidebarPinned=true,bcSidebarCollapsed=false,chatDragDepth=0,officialModuleOpen=true,conversationExpanded=false;
+const navModuleState={};
+function clampUiZoom(v){return Math.max(80,Math.min(125,Math.round(Number(v)||100)))}
+function getVisibleViewport(){const vv=window.visualViewport;const width=Math.max(320,Math.floor(vv?.width||document.documentElement.clientWidth||window.innerWidth||320));const height=Math.max(320,Math.floor(vv?.height||document.documentElement.clientHeight||window.innerHeight||320));return{width,height}}
+function syncAppViewport(){const app=document.querySelector('.app');if(!app)return;const {width,height}=getVisibleViewport(),scale=Math.max(.8,Math.min(1.25,(bcUiZoom||100)/100));document.documentElement.style.setProperty('--bc-shell-width',`${Math.floor(width/scale)}px`);document.documentElement.style.setProperty('--bc-shell-height',`${Math.floor(height/scale)}px`);document.documentElement.style.setProperty('--bc-ui-scale',String(scale));const logicalH=Math.floor(height/scale),logicalW=Math.floor(width/scale);document.documentElement.dataset.bcDensity=logicalH<640?'ultra':logicalH<790?'compact':'normal';document.documentElement.dataset.bcViewport=logicalW<=900?'focus':'wide'}
+function applyUiZoom(value,persist=true){
+  bcUiZoom=clampUiZoom(value);const scale=bcUiZoom/100,app=document.querySelector('.app');
+  if(app){app.style.transform='none';app.style.transformOrigin='';app.style.zoom=String(scale)}
+  syncAppViewport();
+  const z=$('#zoomValue');if(z)z.textContent=`${bcUiZoom}%`;
+  if(persist){try{localStorage.setItem('balbino-chat-ui-zoom',String(bcUiZoom))}catch{}}
 }
-const reais = c => c == null ? '—' : (c / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-const dataBR = iso => iso ? iso.split('-').reverse().join('/') : '—';
-const quando = ms => ms ? new Date(ms).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '—';
-const telefoneBR = t => { const d = String(t || ''); if (d.includes('•')) return d; const m = d.match(/^55(\d{2})(\d{4,5})(\d{4})$/); return m ? `(${m[1]}) ${m[2]}-${m[3]}` : (d || ''); };
-const hojeISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
-const pode = p => estado.ctx?.permissoes?.includes(p);
+function initUiZoom(){let v=100;try{v=Number(localStorage.getItem('balbino-chat-ui-zoom')||100)}catch{}applyUiZoom(v,false)}
+function syncSidebarControls(persist=true){
+  document.body.classList.toggle('sidebar-collapsed',bcSidebarCollapsed);
+  document.body.classList.toggle('sidebar-unpinned',!bcSidebarPinned);
+  const toggle=$('#sidebarToggle'),pin=$('#sidebarPin');
+  if(toggle){toggle.classList.toggle('active',!bcSidebarCollapsed);toggle.title=bcSidebarCollapsed?'Expandir menu':'Recolher menu'}
+  if(pin){pin.classList.toggle('active',bcSidebarPinned);pin.textContent=bcSidebarPinned?'⌖':'⌁';pin.title=bcSidebarPinned?'Menu fixado — clique para liberar':'Menu recolhível — clique para fixar'}
+  requestAnimationFrame(()=>{syncAppViewport();window.dispatchEvent(new Event('resize'))});
+  if(persist){try{localStorage.setItem('balbino-chat-sidebar-pinned',bcSidebarPinned?'1':'0');localStorage.setItem('balbino-chat-sidebar-collapsed',bcSidebarCollapsed?'1':'0')}catch{}}
+}
+function initSidebarControls(){
+  try{bcSidebarPinned=(localStorage.getItem('balbino-chat-sidebar-pinned')??'1')!=='0';bcSidebarCollapsed=(localStorage.getItem('balbino-chat-sidebar-collapsed')??'0')==='1'}catch{}
+  if(!bcSidebarPinned)bcSidebarCollapsed=true;
+  $$('.nav button[data-page]').forEach(b=>{const label=b.querySelector('.label');if(label)b.title=label.textContent.trim()});
+  syncSidebarControls(false);
+}
+function toggleSidebar(){bcSidebarCollapsed=!bcSidebarCollapsed;syncSidebarControls()}
+function toggleSidebarPin(){bcSidebarPinned=!bcSidebarPinned;if(bcSidebarPinned)bcSidebarCollapsed=false;else bcSidebarCollapsed=true;syncSidebarControls()}
+function setComposerMode(mode='message'){
+  state.composeMode=mode==='note'?'note':'message';if(state.composeMode==='note')closeQuickSlashPopover();const note=state.composeMode==='note',box=document.querySelector('.composer');
+  box?.classList.toggle('note-mode',note);$('#messageModeBtn')?.classList.toggle('active',!note);$('#noteBtn')?.classList.toggle('active',note);
+  const composer=$('#composer'),send=$('#sendBtn');
+  if(composer)composer.placeholder=note?'Escreva uma nota interna (não será enviada ao contato)...':'Digite sua mensagem...';
+  if(send){send.title=note?'Salvar nota interna':'Enviar mensagem';send.setAttribute('aria-label',send.title)}
+  composer?.focus();
+}
 
-async function api(caminho, opcoes = {}) {
-  const r = await fetch(caminho, {
-    method: opcoes.method || 'GET',
-    headers: opcoes.body ? { 'Content-Type': 'application/json' } : {},
-    body: opcoes.body ? JSON.stringify(opcoes.body) : undefined,
-    credentials: 'same-origin',
+function normalizeHex(value,fallback){const v=String(value||'').trim();return /^#[0-9a-f]{6}$/i.test(v)?v.toLowerCase():fallback}
+function shadeHex(hex,amount=-24){hex=normalizeHex(hex,'#2563eb').slice(1);const n=parseInt(hex,16),r=Math.max(0,Math.min(255,(n>>16)+amount)),g=Math.max(0,Math.min(255,((n>>8)&255)+amount)),b=Math.max(0,Math.min(255,(n&255)+amount));return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('')}
+const MODO_NOME={light:'Claro',dark:'Escuro',hybrid:'Híbrido'};
+function applyAppearance(prefs={},persistLocal=true){const next={theme:['light','dark','hybrid'].includes(prefs.theme)?prefs.theme:'dark',accent:normalizeHex(prefs.accent||state.appearance?.accent,'#2563eb'),sidebar:normalizeHex(prefs.sidebar||state.appearance?.sidebar,'#0f2f5f')};if(state.brand?.accent)next.accent=state.brand.accent;state.appearance=next;document.documentElement.dataset.theme=next.theme==='dark'?'dark':'light';document.documentElement.dataset.skin=next.theme;document.documentElement.style.setProperty('--accent',next.accent);document.documentElement.style.setProperty('--accent2',shadeHex(next.accent,-28));document.documentElement.style.setProperty('--v2-hl',state.brand?.highlight||'#22d3ee');document.documentElement.style.setProperty('--sidebar-bg',next.sidebar);if(persistLocal){try{localStorage.setItem('balbino-chat-appearance',JSON.stringify(next));localStorage.setItem('balbino-chat-theme',next.theme)}catch{}}const b=$('#themeToggle');if(b){b.textContent=next.theme==='light'?'☀':next.theme==='dark'?'🌙':'🌗';b.title=`Modo ${MODO_NOME[next.theme]} — clique para trocar`}return next}
+function applyTheme(theme){return applyAppearance({...state.appearance,theme})}
+async function persistAppearance(patch){try{const saved=await api('/api/auth/preferences',{method:'PATCH',body:patch});state.notifications={...state.notifications,desktop:saved.desktopNotifications!==false,sound:saved.soundNotifications!==false,whenActive:saved.notifyWhenActive===true};applyAppearance(saved);return saved}catch(e){toast('Não foi possível salvar suas preferências: '+e.message,true);throw e}}
+function toggleTheme(){const ordem=['light','dark','hybrid'],atual=state.appearance?.theme||'light',theme=ordem[(ordem.indexOf(atual)+1)%3];applyTheme(theme);toast(`Modo ${MODO_NOME[theme]}`);if(state.me)persistAppearance({theme}).catch(()=>{})}
+async function carregarMarca(){try{state.brand=await api('/api/appearance');let local=null;try{local=JSON.parse(localStorage.getItem('balbino-chat-appearance')||'null')}catch{}applyAppearance({...(state.appearance||{}),theme:local?.theme||state.appearance?.theme||state.brand.defaultTheme},false)}catch{}}
+function initTheme(){let saved=null;try{saved=JSON.parse(localStorage.getItem('balbino-chat-appearance')||'null')}catch{}if(!saved){let theme='light';try{theme=localStorage.getItem('balbino-chat-theme')||'light'}catch{}saved={theme,accent:'#2563eb',sidebar:'#0f2f5f'}}applyAppearance(saved,false)}
+async function loadAppearancePreferences(){if(!state.me)return;try{state.brand=await api('/api/appearance')}catch{}try{const prefs=await api('/api/auth/preferences');state.notifications={...state.notifications,desktop:prefs.desktopNotifications!==false,sound:prefs.soundNotifications!==false,whenActive:prefs.notifyWhenActive===true};applyAppearance(prefs)}catch{}}
+let notificationAudioContext=null;
+function notificationPermissionText(){
+  if(!('Notification' in window))return 'Não suportada neste navegador';
+  if(Notification.permission==='granted')return 'Permitida';
+  if(Notification.permission==='denied')return 'Bloqueada pelo navegador';
+  return 'Ainda não autorizada';
+}
+async function unlockNotificationAudio(){
+  if(!state.notifications.sound)return false;
+  try{
+    const AC=window.AudioContext||window.webkitAudioContext;
+    if(!AC)return false;
+    if(!notificationAudioContext)notificationAudioContext=new AC();
+    if(notificationAudioContext.state==='suspended')await notificationAudioContext.resume();
+    state.notifications.audioReady=notificationAudioContext.state==='running';
+    return state.notifications.audioReady;
+  }catch{return false}
+}
+async function playNotificationSound(force=false){
+  if(!force&&!state.notifications.sound)return;
+  if(!notificationAudioContext||notificationAudioContext.state!=='running'){
+    if(!force)return;
+    await unlockNotificationAudio();
+  }
+  if(!notificationAudioContext||notificationAudioContext.state!=='running')return;
+  try{
+    const ctx=notificationAudioContext,now=ctx.currentTime;
+    const gain=ctx.createGain(),osc=ctx.createOscillator();
+    osc.type='sine';osc.frequency.setValueAtTime(740,now);osc.frequency.exponentialRampToValueAtTime(920,now+.13);
+    gain.gain.setValueAtTime(.0001,now);gain.gain.exponentialRampToValueAtTime(.13,now+.018);gain.gain.exponentialRampToValueAtTime(.0001,now+.24);
+    osc.connect(gain);gain.connect(ctx.destination);osc.start(now);osc.stop(now+.25);
+  }catch{}
+}
+async function requestDesktopNotifications(){
+  if(!('Notification' in window)){toast('Este navegador não oferece notificações de desktop.',true);return false}
+  let permission=Notification.permission;
+  if(permission==='default')permission=await Notification.requestPermission();
+  if(permission==='denied'){toast('As notificações estão bloqueadas. Libere-as nas permissões do site localhost:3000.',true);return false}
+  await unlockNotificationAudio();
+  toast('Notificações do Balbino Chat ativadas.');
+  return permission==='granted';
+}
+async function testNotifications(){
+  const ok=await requestDesktopNotifications();
+  await playNotificationSound(true);
+  if(ok){try{new Notification('Balbino Chat',{body:'Notificações visuais e sonoras estão funcionando.'})}catch{}}
+}
+async function handleIncomingNotification(payload){
+  const message=payload?.message;if(!message||message.direction!=='IN'||message.historical||message.importedHistory||payload?.isChannel)return;
+  let conv=state.conversations.find(c=>c.id===payload.conversationId)||state.allConversations.find(c=>c.id===payload.conversationId)||null;
+  if(state.me?.role==='AGENT'){try{conv=conv||await api(`/api/conversations/${payload.conversationId}`)}catch{return}}
+  const sameOpen=state.current?.id===payload.conversationId&&!document.hidden;if(sameOpen&&!state.notifications.whenActive)return;
+  const contactName=conv?.contact?.name||message.senderName||'Novo contato',assignedMine=conv?.ownerId===state.me?.id;
+  const title=payload?.isGroup?`${message.senderName||contactName} • ${conv?.contact?.name||'Grupo'}`:(assignedMine?`${contactName} • seu atendimento`:contactName);
+  const text=String(message.body||previewText(message)||'Nova mensagem').replace(/\s+/g,' ').slice(0,180);
+  if(state.notifications.sound)playNotificationSound(false);
+  if(state.notifications.desktop&&'Notification'in window&&Notification.permission==='granted'&&(document.hidden||state.notifications.whenActive)){
+    try{const n=new Notification(title,{body:text,tag:`balbino-${payload.conversationId}`,renotify:true});n.onclick=()=>{window.focus();state.filter=state.me?.role==='SUPER_ADMIN'?'ALL':'MINE';nav('inbox');loadConversations().then(()=>selectConversation(payload.conversationId)).catch(()=>{});n.close()}}catch{}
+  }
+}
+function appearanceModal(){
+  const a=state.appearance||{},n=state.notifications||{};
+  showModal('Minha aparência e notificações',`<div class="appearance-settings"><p class="muted small">Estas preferências ficam salvas somente para o seu usuário.</p><label class="small muted">Tema</label><select class="input" id="uiTheme"><option value="dark" ${a.theme==='dark'?'selected':''}>Escuro</option><option value="light" ${a.theme==='light'?'selected':''}>Claro</option></select><div class="appearance-colors"><label><span>Cor principal</span><input type="color" id="uiAccent" value="${esc(normalizeHex(a.accent,'#2563eb'))}"></label><label><span>Menu lateral</span><input type="color" id="uiSidebar" value="${esc(normalizeHex(a.sidebar,'#0f2f5f'))}"></label></div><div class="appearance-presets"><button class="appearance-preset" data-accent="#2563eb" data-sidebar="#0f2f5f" style="--p:#2563eb">Azul</button><button class="appearance-preset" data-accent="#4f46e5" data-sidebar="#1e1b4b" style="--p:#4f46e5">Índigo</button><button class="appearance-preset" data-accent="#7c3aed" data-sidebar="#2e1065" style="--p:#7c3aed">Roxo</button><button class="appearance-preset" data-accent="#0f9f78" data-sidebar="#063d35" style="--p:#0f9f78">Verde</button><button class="appearance-preset" data-accent="#0891b2" data-sidebar="#083344" style="--p:#0891b2">Turquesa</button></div><div class="appearance-preview"><span>Prévia</span><button class="btn primary">Botão principal</button><span class="chip active">Filtro ativo</span></div><div class="notification-settings"><div class="section-title"><div><b>Notificações</b><div class="small muted">Permissão do navegador: <span id="notificationPermissionState">${esc(notificationPermissionText())}</span></div></div><button class="btn small" id="enableNotifications" type="button">Ativar / testar</button></div><label class="notification-option"><input type="checkbox" id="uiDesktopNotifications" ${n.desktop!==false?'checked':''}> <span><b>Popup do Windows/navegador</b><small>Mostra uma notificação quando chegar uma nova mensagem.</small></span></label><label class="notification-option"><input type="checkbox" id="uiSoundNotifications" ${n.sound!==false?'checked':''}> <span><b>Som de nova mensagem</b><small>Toca um aviso curto para mensagens recebidas.</small></span></label><label class="notification-option"><input type="checkbox" id="uiNotifyActive" ${n.whenActive===true?'checked':''}> <span><b>Notificar mesmo com o chat aberto</b><small>Por padrão, evita popup/som quando você já está vendo aquela conversa.</small></span></label></div><div style="display:flex;gap:7px;margin-top:14px;flex-wrap:wrap"><button class="btn primary" id="saveAppearance">Salvar minhas preferências</button><button class="btn" id="resetAppearance">Restaurar padrão</button></div></div>`);
+  const preview=()=>applyAppearance({theme:$('#uiTheme').value,accent:$('#uiAccent').value,sidebar:$('#uiSidebar').value},false);
+  $('#uiTheme').onchange=preview;$('#uiAccent').oninput=preview;$('#uiSidebar').oninput=preview;
+  $$('.appearance-preset').forEach(b=>b.onclick=()=>{$('#uiAccent').value=b.dataset.accent;$('#uiSidebar').value=b.dataset.sidebar;preview()});
+  $('#enableNotifications').onclick=async()=>{await testNotifications();const x=$('#notificationPermissionState');if(x)x.textContent=notificationPermissionText()};
+  $('#saveAppearance').onclick=async()=>{const patch={theme:$('#uiTheme').value,accent:$('#uiAccent').value,sidebar:$('#uiSidebar').value,desktopNotifications:$('#uiDesktopNotifications').checked,soundNotifications:$('#uiSoundNotifications').checked,notifyWhenActive:$('#uiNotifyActive').checked};state.notifications={...state.notifications,desktop:patch.desktopNotifications,sound:patch.soundNotifications,whenActive:patch.notifyWhenActive};if(patch.soundNotifications)await unlockNotificationAudio();await persistAppearance(patch);hideModal();toast('Preferências salvas para o seu usuário')};
+  $('#resetAppearance').onclick=async()=>{const defaults={theme:'dark',accent:'#2563eb',sidebar:'#0f2f5f',desktopNotifications:true,soundNotifications:true,notifyWhenActive:false};state.notifications={...state.notifications,desktop:true,sound:true,whenActive:false};await persistAppearance(defaults);hideModal();toast('Preferências restauradas')};
+}
+function showModal(title,html){$('#modalTitle').textContent=title;$('#modalBody').innerHTML=html;$('#modal').classList.add('show')}
+function hideModal(){$('#modal').classList.remove('show')}window.hideModal=hideModal;
+const bcSplashStartedAt=performance.now();
+async function finishStartupSplash(){const splash=$('#startupSplash');if(!splash)return;const wait=Math.max(0,700-(performance.now()-bcSplashStartedAt));if(wait)await new Promise(r=>setTimeout(r,wait));splash.classList.add('closing');setTimeout(()=>splash.classList.add('hidden'),220)}
+function showLogin(){$('#loginScreen').classList.remove('hidden')}function hideLogin(){$('#loginScreen').classList.add('hidden')}
+async function login(e){e.preventDefault();try{const d=await api('/api/auth/login',{method:'POST',body:{username:$('#loginUser').value,password:$('#loginPass').value}});state.me=d.user;hideLogin();await bootstrap();toast('Bem-vindo ao Balbino Chat')}catch(e){toast(e.message,true)}}
+async function logout(){await api('/api/auth/logout',{method:'POST'}).catch(()=>{});if(location.pathname.startsWith('/chat')){location.href='/';return}showLogin()}
+function syncNavModules(page=null,persist=true){
+  $$('[data-nav-module]').forEach(module=>{
+    const id=module.dataset.navModule,toggle=module.querySelector('[data-nav-module-toggle]');if(!id||!toggle)return;
+    const pages=[...module.querySelectorAll('button[data-page]')].map(b=>b.dataset.page),active=Boolean(page&&pages.includes(page));
+    if(active)navModuleState[id]=true;
+    const open=navModuleState[id]!==false;module.classList.toggle('open',open);module.classList.toggle('active',active);toggle.setAttribute('aria-expanded',open?'true':'false');
+    if(persist){try{localStorage.setItem(`balbino-chat-nav-${id}-open`,open?'1':'0')}catch{}}
   });
-  let dados = {};
-  try { dados = await r.json(); } catch { /* sem corpo */ }
-  if (r.status === 401 && caminho !== '/api/eu' && !caminho.includes('/auth/')) { estado.eu = null; estado.ctx = null; telaLogin(); throw new Error('Sessão expirada'); }
-  if (!r.ok) throw Object.assign(new Error(dados.erro || `Erro ${r.status}`), { status: r.status, dados });
-  return dados;
 }
-const apiOrg = (c, o) => api(`/api/o/${estado.orgId}${c}`, o);
-
-// replaceChildren converte null em texto "null"; trocar() ignora nulos.
-function trocar(el, ...filhos) { el.replaceChildren(...filhos.flat(Infinity).filter(f => f != null && f !== false)); }
-
-function ir(hash) { if (location.hash === hash) render(); else location.hash = hash; }
-
-const selo = (texto, tipo = 'neutro', icone = '') => h('span', { class: `selo ${tipo}` }, icone ? icone + ' ' : '', texto);
-const aviso = (texto, tipo = 'info', icone = 'ℹ') => h('div', { class: `aviso ${tipo}`, role: tipo === 'erro' ? 'alert' : 'status' }, h('span', { 'aria-hidden': 'true' }, icone), h('div', {}, texto));
-const vazio = (titulo, texto) => h('div', { class: 'vazio' }, h('div', { class: 'vazio-titulo' }, titulo), texto ? h('div', {}, texto) : null);
-const carregando = (t = 'Carregando…') => h('div', { class: 'carregando' }, t);
-const erroBloco = (e, tentar) => h('div', {}, aviso(e.message || String(e), 'erro', '⚠'), tentar ? h('div', { class: 'acoes' }, h('button', { class: 'botao secundario pequeno', onclick: tentar }, 'Tentar novamente')) : null);
-
-function seloTitulo(t) {
-  if (t.situacao === 'PAGO') return selo('Pago', 'ok', '✓');
-  if (t.situacao === 'CANCELADO') return selo('Cancelado', 'neutro', '–');
-  if (t.bloqueio === 'CONTESTADO') return selo('Contestado · pausado', 'alerta', '⏸');
-  if (t.bloqueio === 'COMPROVANTE_EM_ANALISE') return selo('Comprovante em análise', 'atencao', '⏸');
-  if (t.ausente) return selo('Ausente na última carteira', 'atencao', '?');
-  return selo('Em aberto', 'info', '●');
+function initNavModules(){
+  $$('[data-nav-module]').forEach(module=>{const id=module.dataset.navModule,toggle=module.querySelector('[data-nav-module-toggle]');if(!id||!toggle)return;try{navModuleState[id]=(localStorage.getItem(`balbino-chat-nav-${id}-open`)??(id==='management'?'1':'0'))==='1'}catch{navModuleState[id]=id==='management'};toggle.onclick=()=>{if(bcSidebarCollapsed){bcSidebarCollapsed=false;syncSidebarControls()}navModuleState[id]=!(navModuleState[id]!==false);syncNavModules(null,true)}});syncNavModules(null,false)
 }
 
-// ---------- estrutura ----------
-async function carregarEu() {
-  try { estado.eu = await api('/api/eu'); } catch { estado.eu = null; }
+
+function nav(page){closeMobileNav();closeDetails();$$('.page').forEach(p=>p.classList.remove('active'));$('#'+page).classList.add('active');$$('.nav button[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===page));syncNavModules(page,true);const label=$(`.nav button[data-page="${page}"] .label`);$('#pageTitle').textContent=label?label.textContent:page;if(!bcSidebarPinned){bcSidebarCollapsed=true;syncSidebarControls()}loadPage(page)}
+async function loadPage(page){try{if(String(page).startsWith('cob'))await window.BalbinoCobranca?.carregarPagina(page);if(page==='dashboard')await loadDashboard();if(page==='inbox')await loadConversations();if(page==='crm')await loadContacts();if(page==='groups')await loadGroups();if(page==='followups')await loadFollowups();if(page==='scheduled')await loadScheduled();if(page==='quickReplies')await loadQuickRepliesPage();if(page==='automations')await loadAutomations();if(page==='knowledge')await loadKnowledge();if(page==='media')await loadMedia();if(page==='reports')await loadReports();if(page==='supervisor')await loadSupervisor();if(page==='connections')await loadConnections();if(page==='team')await loadTeam();if(page==='queues')await loadQueuesPage();if(page==='flows'){await pendCarregarApoio(true).catch(()=>{});await loadFlowBuilderPage()}if(page==='api')await loadApiTools();if(page==='logs')await loadLogs();if(page==='settings')await loadSettings()}catch(e){toast(e.message,true)}}
+async function bootstrap(){let team,conns;try{[team,conns]=await Promise.all([api('/api/team'),api('/api/connections')])}catch(e){throw new Error('Inicialização: '+e.message)}state.team=team;state.connections=conns;await loadAppearancePreferences();updateTop();applyRoleUI();const profile=$('#userAppearance');if(profile){profile.textContent=initials(state.me?.name||state.me?.username||'BC');profile.title='Minha aparência'}try{nav('inbox')}catch(e){throw new Error('Atendimentos: '+e.message)}}
+function connectionForConversation(c=state.current){return c?.instance||state.connections.find(x=>x.id===c?.instanceId)||null}
+function connectionDisplayName(c){return String(c?.name||c?.phone||c?.id||'WhatsApp')}
+function connectionDisplayPhone(c){return String(c?.phone||'').trim()}
+function formatConnectionPhone(raw){
+  const digits=String(raw||'').replace(/\D/g,'');
+  if(!digits)return'';
+  let d=digits;
+  if(d.length===13&&d.startsWith('55'))return `+55 (${d.slice(2,4)}) ${d.slice(4,9)}-${d.slice(9)}`;
+  if(d.length===12&&d.startsWith('55'))return `+55 (${d.slice(2,4)}) ${d.slice(4,8)}-${d.slice(8)}`;
+  if(d.length===11)return `+55 (${d.slice(0,2)}) ${d.slice(2,7)}-${d.slice(7)}`;
+  if(d.length===10)return `+55 (${d.slice(0,2)}) ${d.slice(2,6)}-${d.slice(6)}`;
+  return raw;
 }
-
-function telaLogin() {
-  document.title = `Entrar · ${MARCA.nome}`;
-  const erro = h('div');
-  const form = h('form', {
-    onsubmit: async ev => {
-      ev.preventDefault();
-      trocar(erro, );
-      const b = form.querySelector('button'); b.disabled = true;
-      try {
-        await api('/api/auth/login', { method: 'POST', body: { login: form.login.value, senha: form.senha.value } });
-        await carregarEu();
-        ir('#/');
-      } catch (e) { trocar(erro, aviso(e.message, 'erro', '⚠')); b.disabled = false; }
-    },
-  },
-  h('div', { class: 'campo' }, h('label', { for: 'login' }, 'Login'), h('input', { type: 'text', id: 'login', name: 'login', autocomplete: 'username', required: true })),
-  h('div', { class: 'campo' }, h('label', { for: 'senha' }, 'Senha'), h('input', { type: 'password', id: 'senha', name: 'senha', autocomplete: 'current-password', required: true })),
-  erro,
-  h('button', { class: 'botao', type: 'submit' }, 'Entrar'));
-  trocar(raiz, h('main', { class: 'tela-login' }, h('div', { class: 'caixa-login' },
-    h('h1', { class: 'logo-login' }, h('img', { class: 'logo', src: MARCA.logo, alt: MARCA.nome, width: 251, height: 48 })),
-    h('p', { class: 'assinatura' }, MARCA.assinatura),
-    h('div', { class: 'detalhe', 'aria-hidden': 'true' }),
-    form)));
-}
-
-function moldura(paginaAtiva, conteudo) {
-  const eu = estado.eu;
-  const org = estado.orgId;
-  const link = (rota, icone, texto, extra = {}) => h('a', { href: rota, class: (paginaAtiva === rota.split('/').slice(3, 4)[0] || paginaAtiva === rota) ? 'ativo' : '', ...extra },
-    h('span', { class: 'icone', 'aria-hidden': 'true' }, icone), texto);
-  const breve = (icone, texto) => h('a', { class: 'desligado', 'aria-disabled': 'true' }, h('span', { class: 'icone', 'aria-hidden': 'true' }, icone), texto, h('span', { class: 'selo-breve' }, 'próximo'));
-  const nav = h('nav', { class: 'nav', 'aria-label': 'Menu principal' },
-    org && pode('fila.ver') ? link(`#/o/${org}/fila`, '☰', 'Fila de hoje') : null,
-    org && pode('carteira.ver') ? link(`#/o/${org}/carteira`, '▤', 'Carteira') : null,
-    org && pode('conversa.ver') ? link(`#/o/${org}/conversas`, '✉', 'Atendimento') : null,
-    org && pode('carteira.importar') ? link(`#/o/${org}/importar`, '⇪', 'Importar carteira') : null,
-    org && !pode('carteira.importar') && pode('lotes.ver') ? link(`#/o/${org}/importar`, '⇪', 'Importações') : null,
-    org ? [breve('◇', 'Acordos'), breve('☷', 'Pendências'), breve('▦', 'Relatório')] : null,
-    eu.usuario.admin ? [h('div', { class: 'nav-titulo' }, 'Administração'), link('#/admin/instituicoes', '⌂', 'Instituições'), link('#/admin/usuarios', '◉', 'Usuários e permissões')] : null);
-  const seletor = h('select', {
-    id: 'seletor-org', 'aria-label': 'Instituição',
-    onchange: e => ir(e.target.value ? `#/o/${e.target.value}/fila` : '#/'),
-  }, h('option', { value: '' }, eu.instituicoes.length ? 'Selecione a instituição…' : 'Nenhuma instituição autorizada'),
-  eu.instituicoes.map(i => h('option', { value: i.organizacao_id, selected: i.organizacao_id === org }, i.nome)));
-  const papel = estado.ctx && org ? ({ ADMIN: 'Administrador', SUPERVISOR: 'Supervisor', ATENDENTE: 'Atendente', REPRESENTANTE: 'Representante' }[estado.ctx.papel]) : (eu.usuario.admin ? 'Administrador' : '');
-  trocar(raiz, h('div', { class: 'app' },
-    h('aside', { class: 'lateral' },
-      h('a', { class: 'marca-lateral', href: '#/', 'aria-label': `${MARCA.nome} — início` },
-        h('img', { class: 'marca-horizontal', src: MARCA.logoNegativo, alt: '', width: 167, height: 32 }),
-        h('img', { class: 'marca-compacta', src: MARCA.monogramaNegativo, alt: '', width: 42, height: 20 })),
-      nav,
-      h('div', { class: 'rodape-lateral' }, `${MARCA.nome} ${eu.versao}`)),
-    h('div', { class: 'principal' },
-      h('header', { class: 'topo' },
-        h('div', { class: 'seletor-org' }, h('label', { for: 'seletor-org' }, 'Instituição'), seletor),
-        estado.ctx && org && !estado.ctx.todas_unidades ? selo(`Unidades: ${estado.ctx.unidades.map(u => u.nome).join(', ') || 'nenhuma'}`, 'neutro') : null,
-        h('div', { class: 'usuario' }, h('span', {}, eu.usuario.nome), papel ? selo(papel, 'info') : null,
-          h('button', { class: 'botao secundario pequeno', onclick: async () => { await api('/api/auth/logout', { method: 'POST' }); estado.eu = null; ir('#/login'); } }, 'Sair'))),
-      eu.envio_real ? null : h('div', { class: 'faixa-teste', role: 'note' }, h('strong', {}, 'Ambiente de teste: '), 'nenhuma mensagem real é enviada. Envios ficam registrados como simulados ou bloqueados.'),
-      h('main', { class: 'conteudo', id: 'conteudo' }, conteudo))));
-}
-
-function cabecalho(titulo, subtitulo, ...acoes) {
-  document.title = `${titulo} · ${estado.ctx?.organizacao?.nome ? estado.ctx.organizacao.nome + ' · ' : ''}${MARCA.nome}`;
-  return h('div', { class: 'cabecalho-pagina' }, h('div', {}, h('h1', {}, titulo), subtitulo ? h('p', { class: 'mudo' }, subtitulo) : null), acoes.length ? h('div', { class: 'acoes' }, acoes) : null);
-}
-
-// ---------- Início ----------
-function paginaInicio() {
-  const eu = estado.eu;
-  if (eu.instituicoes.length === 1 && !eu.usuario.admin) return ir(`#/o/${eu.instituicoes[0].organizacao_id}/fila`);
-  moldura('', h('div', {},
-    cabecalho(`Olá, ${eu.usuario.nome.split(' ')[0]}`, 'Escolha a instituição para trabalhar. Cada instituição tem carteira, conversas e permissões separadas.'),
-    eu.instituicoes.length
-      ? h('div', { class: 'grade grade-4' }, eu.instituicoes.map(i => h('a', { class: 'cartao', href: `#/o/${i.organizacao_id}/${i.papel === 'REPRESENTANTE' ? 'carteira' : 'fila'}` }, h('h3', {}, i.nome), h('div', { class: 'mudo pequeno' }, ({ ADMIN: 'Administrador', SUPERVISOR: 'Supervisor', ATENDENTE: 'Atendente', REPRESENTANTE: 'Representante' })[i.papel]))))
-      : h('div', { class: 'cartao' }, vazio('Nenhuma instituição autorizada', eu.usuario.admin ? 'Cadastre a primeira instituição em Administração › Instituições.' : 'Peça ao administrador da GO Negocia para liberar seu acesso.'))));
-}
-
-// ---------- Fila de hoje ----------
-async function paginaFila() {
-  const filtros = { unidade: '', atendente: estado.ctx.papel === 'ATENDENTE' ? 'meus' : '', atraso: '' };
-  const area = h('div', {}, carregando());
-  const carregar = async () => {
-    trocar(area, carregando());
-    try {
-      const q = new URLSearchParams(Object.entries(filtros).filter(([, v]) => v)).toString();
-      const f = await apiOrg(`/fila?${q}`);
-      if (!f.itens.length) return trocar(area, h('div', { class: 'cartao' }, vazio('Nada na fila de hoje', 'Todos os casos têm próxima ação futura, retorno combinado ou títulos pausados. Ajuste os filtros para ver mais.')));
-      trocar(area, h('div', { class: 'cartao tabela-wrap' }, h('table', {},
-        h('thead', {}, h('tr', {}, ['Responsável', 'Saldo negociável', 'Atraso', 'Próxima ação', 'Atendente', 'Situação'].map(t => h('th', { class: /Saldo|Atraso/.test(t) ? 'num' : '' }, t)))),
-        h('tbody', {}, f.itens.map(i => h('tr', { class: 'clicavel', tabindex: 0, onclick: () => ir(`#/o/${estado.orgId}/caso/${i.caso_id}`), onkeydown: e => { if (e.key === 'Enter') ir(`#/o/${estado.orgId}/caso/${i.caso_id}`); } },
-          h('td', {}, h('strong', {}, i.responsavel), h('div', { class: 'mudo pequeno' }, `${i.titulos} título(s) · ${i.telefone_mascarado || 'sem telefone'}`)),
-          h('td', { class: 'num' }, reais(i.saldo_negociavel_centavos)),
-          h('td', { class: 'num' }, `${i.dias_atraso} dias`),
-          h('td', {}, i.proxima_acao.em ? h('div', {}, dataBR(i.proxima_acao.em), h('div', { class: 'mudo pequeno' }, rotuloAcao(i.proxima_acao.tipo))) : selo('Primeiro contato', 'info', '★')),
-          h('td', {}, i.atendente?.nome || h('span', { class: 'mudo' }, 'Sem atendente')),
-          h('td', {}, i.em_uso_por ? selo(`Em uso por ${i.em_uso_por}`, 'atencao', '⏳') : null, ' ',
-            !i.contato_autorizado ? selo('Contato não autorizado', 'alerta', '⛔') : null, ' ',
-            i.saldo_desatualizado ? selo('Saldo desatualizado', 'atencao', '⚠') : null)))))));
-    } catch (e) { trocar(area, erroBloco(e, carregar)); }
-  };
-  const ctx = estado.ctx;
-  moldura('fila', h('div', {},
-    cabecalho('Fila de hoje', `${ctx.organizacao.nome} · casos com próxima ação até hoje, sem retorno combinado pendente e com título negociável.`),
-    h('div', { class: 'filtros' },
-      ctx.unidades.length > 1 ? h('div', { class: 'campo' }, h('label', { for: 'f-un' }, 'Unidade'), h('select', { id: 'f-un', onchange: e => { filtros.unidade = e.target.value; carregar(); } }, h('option', { value: '' }, 'Todas'), ctx.unidades.map(u => h('option', { value: u.id }, u.nome)))) : null,
-      h('div', { class: 'campo' }, h('label', { for: 'f-at' }, 'Atendente'), h('select', { id: 'f-at', onchange: e => { filtros.atendente = e.target.value; carregar(); } },
-        h('option', { value: '', selected: !filtros.atendente }, 'Todos'), h('option', { value: 'meus', selected: filtros.atendente === 'meus' }, 'Meus e sem atendente'), h('option', { value: 'sem' }, 'Sem atendente'),
-        ctx.equipe.map(u => h('option', { value: u.id }, u.nome)))),
-      h('div', { class: 'campo' }, h('label', { for: 'f-atr' }, 'Atraso mínimo'), h('select', { id: 'f-atr', onchange: e => { filtros.atraso = e.target.value; carregar(); } },
-        h('option', { value: '' }, 'Qualquer'), [15, 30, 60, 90].map(d => h('option', { value: d }, `${d}+ dias`))))),
-    area));
-  carregar();
-}
-
-const rotuloAcao = t => ({ NOVO_CONTATO: 'Novo contato', RETORNO_COMBINADO: 'Retorno combinado', CONFERIR_PROMESSA: 'Conferir promessa', AGUARDAR_RESPOSTA: 'Aguardando resposta', RESPONDER_MENSAGEM: 'Responder mensagem' }[t] || t || '—');
-
-// ---------- Carteira ----------
-async function paginaCarteira() {
-  const ctx = estado.ctx;
-  const filtros = { busca: '', unidade: '', pagina: 1 };
-  const area = h('div', {}, carregando());
-  const r = ctx.resumo;
-  const desatualizada = r.referencia_mais_antiga && (Date.parse(hojeISO()) - Date.parse(r.referencia_mais_antiga)) / 86400000 > ctx.organizacao.dias_saldo_valido;
-  const carregar = async () => {
-    trocar(area, carregando());
-    try {
-      const q = new URLSearchParams(Object.entries(filtros).filter(([, v]) => v)).toString();
-      const c = await apiOrg(`/carteira?${q}`);
-      if (!c.itens.length) return trocar(area, h('div', { class: 'cartao' }, filtros.busca ? vazio('Nenhum responsável encontrado', 'Busque por nome, código, matrícula ou telefone.') : vazio('Carteira vazia', pode('carteira.importar') ? 'Importe o arquivo de carteira da escola para começar.' : 'A carteira desta instituição ainda não foi importada.')));
-      const abre = pode('caso.trabalhar');
-      trocar(area, h('div', { class: 'cartao tabela-wrap' },
-        h('table', {},
-          h('thead', {}, h('tr', {}, ['Responsável', 'Código', 'Títulos em aberto', 'Saldo em aberto', 'Atraso', 'Situação'].map(t => h('th', { class: /Saldo|Atraso|Títulos/.test(t) ? 'num' : '' }, t)))),
-          h('tbody', {}, c.itens.map(i => h('tr', abre ? { class: 'clicavel', tabindex: 0, onclick: () => abrirCasoResp(i.id), onkeydown: e => { if (e.key === 'Enter') abrirCasoResp(i.id); } } : {},
-            h('td', {}, h('strong', {}, i.nome), h('div', { class: 'mudo pequeno' }, telefoneBR(i.telefone) || 'sem telefone', i.documento_final ? ` · doc ${i.documento_final}` : '')),
-            h('td', {}, i.chave_origem),
-            h('td', { class: 'num' }, i.titulos_abertos),
-            h('td', { class: 'num' }, reais(i.saldo_aberto_centavos)),
-            h('td', { class: 'num' }, `${i.dias_atraso} dias`),
-            h('td', {}, i.titulos_com_alerta ? selo(`${i.titulos_com_alerta} com alerta`, 'atencao', '⚠') : selo('Regular', 'info', '●'), ' ', i.saldo_desatualizado ? selo('Saldo desatualizado', 'atencao', '⏱') : null, ' ', !i.contato_autorizado ? selo('Sem autorização de contato', 'neutro', '⛔') : null))))),
-        h('div', { class: 'acoes pequeno mudo' }, `${c.total} responsável(is)`, c.total > c.por_pagina ? [
-          h('button', { class: 'botao secundario pequeno', disabled: filtros.pagina <= 1, onclick: () => { filtros.pagina--; carregar(); } }, '‹ Anterior'),
-          h('button', { class: 'botao secundario pequeno', disabled: filtros.pagina * c.por_pagina >= c.total, onclick: () => { filtros.pagina++; carregar(); } }, 'Próxima ›')] : null)));
-    } catch (e) { trocar(area, erroBloco(e, carregar)); }
-  };
-  let t;
-  moldura('carteira', h('div', {},
-    cabecalho('Carteira', ctx.organizacao.nome, pode('carteira.importar') ? h('a', { class: 'botao', href: `#/o/${estado.orgId}/importar` }, '⇪ Importar carteira') : null),
-    h('div', { class: 'grade grade-4' },
-      ind('Saldo em aberto', reais(r.saldo_aberto_centavos), `${r.titulos_abertos} títulos`),
-      ind('Responsáveis', r.responsaveis, 'com título em aberto'),
-      ind('Saldo atualizado em', dataBR(r.referencia_mais_recente), r.referencia_mais_antiga && r.referencia_mais_antiga !== r.referencia_mais_recente ? `mais antigo: ${dataBR(r.referencia_mais_antiga)}` : 'data de referência do arquivo'),
-      ind('Títulos com alerta', r.titulos_com_alerta, 'pausados ou ausentes da última carteira')),
-    desatualizada ? h('div', {}, h('br'), aviso(`Há saldos com mais de ${ctx.organizacao.dias_saldo_valido} dias. Contatos ativos ficam bloqueados nesses casos até a carteira ser atualizada.`, 'atencao', '⏱')) : null,
-    h('br'),
-    h('div', { class: 'filtros' },
-      h('div', { class: 'campo' }, h('label', { for: 'busca' }, 'Buscar'), h('input', { type: 'search', id: 'busca', placeholder: 'Nome, código, matrícula ou telefone', oninput: e => { clearTimeout(t); t = setTimeout(() => { filtros.busca = e.target.value; filtros.pagina = 1; carregar(); }, 300); } })),
-      ctx.unidades.length > 1 ? h('div', { class: 'campo' }, h('label', { for: 'c-un' }, 'Unidade'), h('select', { id: 'c-un', onchange: e => { filtros.unidade = e.target.value; filtros.pagina = 1; carregar(); } }, h('option', { value: '' }, 'Todas'), ctx.unidades.map(u => h('option', { value: u.id }, u.nome)))) : null),
-    area));
-  carregar();
-}
-const ind = (rotulo, valor, nota) => h('div', { class: 'cartao indicador' }, h('div', { class: 'rotulo' }, rotulo), h('div', { class: 'valor' }, valor), nota ? h('div', { class: 'nota' }, nota) : null);
-
-async function abrirCasoResp(respId) {
-  try { const r = await apiOrg(`/responsaveis/${respId}/caso`); ir(`#/o/${estado.orgId}/caso/${r.caso_id}`); }
-  catch (e) { alertaFlutuante(e.message); }
-}
-
-function alertaFlutuante(msg, tipo = 'erro') {
-  const d = h('dialog', {}, aviso(msg, tipo, tipo === 'erro' ? '⚠' : 'ℹ'), h('div', { class: 'acoes' }, h('button', { class: 'botao', onclick: () => d.close() }, 'OK')));
-  d.addEventListener('close', () => d.remove());
-  document.body.append(d); d.showModal();
-}
-
-// ---------- Caso (atendimento) ----------
-async function paginaCaso(casoId) {
-  moldura('fila', carregando());
-  const conteudo = document.getElementById('conteudo');
-  let c;
-  try { c = await apiOrg(`/casos/${casoId}`); }
-  catch (e) { return trocar(conteudo, e.status === 404 ? h('div', { class: 'cartao' }, vazio('Caso não encontrado', 'Ele não existe ou não pertence às instituições e unidades que você pode acessar.')) : erroBloco(e, () => paginaCaso(casoId))); }
-  const eu = estado.eu.usuario;
-  const minhaTrava = c.trava?.usuario_id === eu.id;
-  const recarregar = () => paginaCaso(casoId);
-  const msg = h('div');
-  const acao = async (fn, ok) => { trocar(msg); try { const navegou = await fn(); if (navegou === 'navegou') return; if (ok) trocar(msg, aviso(ok, 'ok', '✓')); setTimeout(recarregar, ok ? 700 : 0); } catch (e) { trocar(msg, aviso(e.message, 'erro', '⚠'), e.dados?.bloqueios ? h('ul', {}, e.dados.bloqueios.map(b => h('li', {}, b.texto))) : null); } };
-
-  const blocoTrava = c.trava && !minhaTrava
-    ? aviso(`${c.trava.nome} está trabalhando este caso até ${quando(c.trava.ate)}. Para evitar contato duplicado, aguarde${pode('fila.distribuir') ? ' ou assuma como supervisor' : ''}.`, 'atencao', '⏳')
-    : minhaTrava ? aviso(`Você está com este caso até ${quando(c.trava.ate)}.`, 'info', '✋') : null;
-  const botoesTrava = h('div', { class: 'acoes' },
-    !minhaTrava && !c.trava ? h('button', { class: 'botao', onclick: () => acao(() => apiOrg(`/casos/${casoId}/assumir`, { method: 'POST', body: {} })) }, 'Assumir caso') : null,
-    c.trava && !minhaTrava && pode('fila.distribuir') ? h('button', { class: 'botao perigo', onclick: () => acao(() => apiOrg(`/casos/${casoId}/assumir`, { method: 'POST', body: { forcar: true } })) }, 'Assumir mesmo assim') : null,
-    minhaTrava ? h('button', { class: 'botao secundario', onclick: () => acao(() => apiOrg(`/casos/${casoId}/liberar`, { method: 'POST', body: {} })) }, 'Liberar caso') : null);
-
-  const unidadesAlunos = [...new Set(c.alunos.map(a => a.unidade_nome).filter(Boolean))];
-  const titulos = h('div', { class: 'tabela-wrap' }, c.titulos.length ? h('table', {},
-    h('thead', {}, h('tr', {}, ['Título', 'Aluno', 'Competência', 'Vencimento', 'Saldo', 'Situação'].map(t => h('th', { class: t === 'Saldo' ? 'num' : '' }, t)))),
-    h('tbody', {}, c.titulos.map(t => h('tr', {},
-      h('td', { class: 'sem-quebra' }, t.id_origem, h('div', { class: 'mudo pequeno' }, t.unidade_nome || 'Sem unidade')),
-      h('td', {}, t.aluno_nome || '—', h('div', { class: 'mudo pequeno' }, `Mat. ${t.aluno_matricula}`)),
-      h('td', {}, t.competencia ? t.competencia.split('-').reverse().join('/') : '—'),
-      h('td', {}, dataBR(t.vencimento), t.dias_atraso ? h('div', { class: 'mudo pequeno' }, `${t.dias_atraso} dias de atraso`) : null),
-      h('td', { class: 'num' }, reais(t.saldo_centavos), h('div', { class: 'mudo pequeno' }, `ref. ${dataBR(t.saldo_referencia)}`)),
-      h('td', {}, seloTitulo(t), t.alertas.filter(a => a.codigo === 'DESATUALIZADO').map(a => h('div', {}, selo(a.texto, 'atencao', '⏱')))))))) : vazio('Sem títulos visíveis'));
-
-  // Registrar contato
-  const form = h('form', {
-    class: 'grade', onsubmit: ev => {
-      ev.preventDefault();
-      const f = ev.target;
-      const corpo = { canal: f.canal.value, direcao: f.direcao.value, resultado: f.resultado.value, nota: f.nota.value, proxima_acao_em: f.proxima.value || null };
-      if (corpo.resultado === 'RETORNO_COMBINADO') corpo.retorno_em = f.retorno.value;
-      if (corpo.resultado === 'PROMESSA') { corpo.promessa_data = f.promessa.value; const v = Math.round(Number(String(f.valor.value).replace(/\./g, '').replace(',', '.')) * 100); if (v > 0) corpo.promessa_centavos = v; }
-      acao(() => apiOrg(`/casos/${casoId}/contatos`, { method: 'POST', body: corpo }), 'Contato registrado.');
-    },
-  },
-  h('div', { class: 'form-linha' },
-    h('div', { class: 'campo' }, h('label', { for: 'canal' }, 'Canal'), h('select', { id: 'canal', name: 'canal' }, [['WHATSAPP', 'WhatsApp'], ['TELEFONE', 'Telefone'], ['EMAIL', 'E-mail'], ['PRESENCIAL', 'Presencial']].map(([v, t]) => h('option', { value: v }, t)))),
-    h('div', { class: 'campo' }, h('label', { for: 'direcao' }, 'Tipo'), h('select', { id: 'direcao', name: 'direcao' }, h('option', { value: 'ATIVO' }, 'Ativo (nós contatamos)'), h('option', { value: 'RECEPTIVO' }, 'Receptivo (família procurou)'))),
-    h('div', { class: 'campo' }, h('label', { for: 'resultado' }, 'Resultado'), h('select', {
-      id: 'resultado', name: 'resultado', onchange: e => {
-        form.querySelector('#bloco-retorno').classList.toggle('oculto', e.target.value !== 'RETORNO_COMBINADO');
-        form.querySelector('#bloco-promessa').classList.toggle('oculto', e.target.value !== 'PROMESSA');
-      },
-    }, [['SEM_RESPOSTA', 'Tentativa sem resposta'], ['RESPONDEU', 'Respondeu'], ['RETORNO_COMBINADO', 'Retorno combinado'], ['PROMESSA', 'Promessa de pagamento'], ['RECUSA', 'Recusou negociar'], ['NUMERO_INVALIDO', 'Número inválido'], ['OUTRO', 'Outro']].map(([v, t]) => h('option', { value: v }, t))))),
-  h('div', { class: 'form-linha oculto', id: 'bloco-retorno' }, h('div', { class: 'campo' }, h('label', { for: 'retorno' }, 'Retorno combinado para'), h('input', { type: 'datetime-local', id: 'retorno', name: 'retorno' }), h('span', { class: 'ajuda' }, 'Até essa hora o caso sai da fila e o contato ativo fica bloqueado.'))),
-  h('div', { class: 'form-linha oculto', id: 'bloco-promessa' },
-    h('div', { class: 'campo' }, h('label', { for: 'promessa' }, 'Data prometida'), h('input', { type: 'date', id: 'promessa', name: 'promessa', min: hojeISO() })),
-    h('div', { class: 'campo' }, h('label', { for: 'valor' }, 'Valor prometido (R$)'), h('input', { type: 'text', id: 'valor', name: 'valor', inputmode: 'decimal', placeholder: '0,00' }), h('span', { class: 'ajuda' }, 'Promessa não é acordo nem pagamento.'))),
-  h('div', { class: 'campo' }, h('label', { for: 'nota' }, 'Anotação'), h('textarea', { id: 'nota', name: 'nota', maxlength: 2000 })),
-  h('div', { class: 'form-linha' },
-    h('div', { class: 'campo' }, h('label', { for: 'proxima' }, 'Próxima ação em'), h('input', { type: 'date', id: 'proxima', name: 'proxima', min: hojeISO() }), h('span', { class: 'ajuda' }, 'Obrigatória, exceto recusa e número inválido. Retorno e promessa preenchem sozinhos.')),
-    h('div', {}, h('button', { class: 'botao', type: 'submit', disabled: !minhaTrava }, 'Registrar contato'))),
-  !minhaTrava ? h('div', { class: 'mudo pequeno' }, 'Assuma o caso para registrar.') : null);
-
-  // WhatsApp
-  const zap = h('div', {}, carregando('Verificando bloqueios…'));
-  (async () => {
-    if (!pode('conversa.enviar')) return trocar(zap, h('div', { class: 'mudo' }, 'Seu perfil não envia mensagens.'));
-    const conexoes = estado.ctx.conexoes;
-    try {
-      const b = await apiOrg(`/casos/${casoId}/bloqueios`);
-      const sel = h('select', { id: 'cx', 'aria-label': 'Conexão de envio' }, conexoes.map(x => h('option', { value: x.id }, `${x.nome} · ${x.modo === 'OFICIAL' ? 'API oficial' : 'teste'}`)));
-      trocar(zap, 
-        c.conversas.length ? h('div', {}, h('div', { class: 'pequeno mudo' }, 'Conversas deste caso'), c.conversas.map(cv => h('div', {}, h('a', { href: `#/o/${estado.orgId}/conversas/${cv.id}` }, `${cv.conexao_nome} · ${cv.verificada_em ? 'identidade confirmada' : 'aguardando confirmação'}`))), h('br')) : null,
-        !conexoes.length ? aviso('Esta instituição não tem conexão de WhatsApp ativa.', 'atencao', '⚠')
-          : b.bloqueios.length ? h('div', {}, b.bloqueios.map(x => aviso(x.texto, 'atencao', '⏸')))
-            : h('div', { class: 'grade' },
-              h('div', { class: 'aviso info' }, h('span', {}, 'ℹ'), h('div', {}, 'O primeiro contato apresenta você, a GO Negocia e a instituição, sem mencionar valores. O débito só é tratado depois da confirmação do responsável.')),
-              conexoes.length > 1 ? sel : null,
-              h('div', {}, h('button', { class: 'botao', disabled: !minhaTrava, onclick: () => acao(async () => { const r = await apiOrg(`/casos/${casoId}/contato-ativo`, { method: 'POST', body: { conexao_id: conexoes.length > 1 ? sel.value : conexoes[0].id } }); ir(`#/o/${estado.orgId}/conversas/${r.conversa_id}`); return 'navegou'; }) }, 'Iniciar contato pelo WhatsApp'))));
-    } catch (e) { trocar(zap, erroBloco(e)); }
-  })();
-
-  trocar(conteudo, 
-    cabecalho(c.responsavel.nome, `${c.organizacao.nome}${unidadesAlunos.length ? ' · ' + unidadesAlunos.join(', ') : ''} · código ${c.responsavel.chave_origem}`,
-      h('a', { class: 'botao secundario', href: `#/o/${estado.orgId}/fila` }, '‹ Fila')),
-    blocoTrava, botoesTrava, msg, h('br'),
-    h('div', { class: 'grade grade-4' },
-      ind('Saldo negociável', reais(c.totais.saldo_negociavel_centavos), `${c.totais.titulos_negociaveis} título(s)`),
-      ind('Títulos pausados', c.totais.titulos_pausados, 'contestados, em análise ou ausentes'),
-      ind('Próxima ação', c.proxima_acao.em ? dataBR(c.proxima_acao.em) : 'Hoje', c.proxima_acao.tipo ? rotuloAcao(c.proxima_acao.tipo) : 'primeiro contato'),
-      ind('Contato', c.responsavel.contato_autorizado ? 'Autorizado' : 'Não autorizado', telefoneBR(c.responsavel.telefone) || 'sem telefone')),
-    h('br'),
-    h('div', { class: 'grade grade-2' },
-      h('div', {},
-        h('section', { class: 'cartao' },
-          h('div', { class: 'abas', role: 'tablist' }, h('button', { class: 'ativa', role: 'tab', 'aria-selected': 'true' }, 'Títulos'), h('button', { role: 'tab', disabled: true, title: 'Chega no incremento 2 (acordos)' }, 'Negociação · próximo incremento')),
-          h('div', { class: 'pequeno mudo' }, 'Alunos: ', c.alunos.map(a => `${a.nome || 'Aluno'} (mat. ${a.matricula}${a.unidade_nome ? ' · ' + a.unidade_nome : ''})`).join(' · ') || '—'),
-          h('br'), titulos),
-        h('section', { class: 'cartao' }, h('h2', {}, 'Registrar contato'), h('br'), form)),
-      h('div', {},
-        h('section', { class: 'cartao' }, h('h2', {}, 'WhatsApp'), h('br'), zap),
-        h('section', { class: 'cartao' }, h('h2', {}, 'Histórico'),
-          c.contatos.length ? h('ul', { class: 'linha-tempo' }, c.contatos.map(ct => h('li', {},
-            h('div', {}, h('strong', {}, rotuloResultado(ct.resultado)), ' · ', ct.canal.toLowerCase(), ' · ', ct.direcao === 'ATIVO' ? 'ativo' : 'receptivo'),
-            h('div', { class: 'mudo pequeno' }, `${quando(ct.em)} · ${ct.usuario_nome}`),
-            ct.promessa_data ? h('div', { class: 'pequeno' }, `Promessa para ${dataBR(ct.promessa_data)}${ct.promessa_centavos ? ' · ' + reais(ct.promessa_centavos) : ''}`) : null,
-            ct.retorno_em ? h('div', { class: 'pequeno' }, `Retorno combinado: ${quando(ct.retorno_em)}`) : null,
-            ct.nota ? h('div', { class: 'pequeno' }, ct.nota) : null))) : vazio('Nenhum contato registrado'))),
-      ));
-}
-const rotuloResultado = r => ({ SEM_RESPOSTA: 'Sem resposta', RESPONDEU: 'Respondeu', RETORNO_COMBINADO: 'Retorno combinado', PROMESSA: 'Promessa de pagamento', RECUSA: 'Recusou', NUMERO_INVALIDO: 'Número inválido', OUTRO: 'Outro' }[r] || r);
-
-// ---------- Conversas ----------
-async function paginaConversas(conversaId) {
-  const lista = h('div', { class: 'lista-conversas' }, carregando());
-  const detalhe = h('div', {}, conversaId ? carregando() : h('div', { class: 'cartao' }, vazio('Selecione uma conversa', 'As mensagens recebidas entram aqui, já separadas pela conexão da instituição.')));
-  const simular = pode('teste.simular') && estado.ctx.conexoes.some(c => c.modo === 'TESTE') ? (() => {
-    const f = h('form', {
-      class: 'grade', onsubmit: async ev => {
-        ev.preventDefault();
-        try { const r = await apiOrg('/teste/receber', { method: 'POST', body: { conexao_id: f.cxs.value, telefone: f.tel.value, texto: f.txt.value } }); ir(`#/o/${estado.orgId}/conversas/${r.conversaId}`); }
-        catch (e) { alertaFlutuante(e.message); }
-      },
-    },
-    h('div', { class: 'campo' }, h('label', { for: 'cxs' }, 'Conexão de teste'), h('select', { id: 'cxs', name: 'cxs' }, estado.ctx.conexoes.filter(c => c.modo === 'TESTE').map(c => h('option', { value: c.id }, c.nome)))),
-    h('div', { class: 'campo' }, h('label', { for: 'tel' }, 'Telefone de quem escreve'), h('input', { type: 'text', id: 'tel', name: 'tel', required: true, placeholder: '16 99000-0001' })),
-    h('div', { class: 'campo' }, h('label', { for: 'txt' }, 'Mensagem'), h('input', { type: 'text', id: 'txt', name: 'txt', required: true, value: 'Oi, recebi uma mensagem de vocês.' })),
-    h('button', { class: 'botao secundario', type: 'submit' }, 'Simular mensagem recebida'));
-    return h('details', { class: 'cartao' }, h('summary', {}, 'Ambiente de teste: simular mensagem recebida'), h('br'), f);
-  })() : null;
-  moldura('conversas', h('div', {}, cabecalho('Atendimento', `${estado.ctx.organizacao.nome} · conversas de WhatsApp desta instituição`),
-    h('div', { class: 'grade grade-2' }, detalhe, h('div', {}, h('section', { class: 'cartao' }, h('h2', {}, 'Conversas'), lista), simular))));
-  try {
-    const cs = await apiOrg('/conversas');
-    trocar(lista, ...(cs.length ? cs.map(cv => h('button', { class: cv.id === conversaId ? 'ativa' : '', onclick: () => ir(`#/o/${estado.orgId}/conversas/${cv.id}`) },
-      h('div', {}, h('strong', {}, cv.responsavel || telefoneBR(cv.telefone)), ' ', cv.verificada ? selo('Confirmada', 'ok', '✓') : selo('Não confirmada', 'atencao', '?')),
-      h('div', { class: 'mudo pequeno' }, `${cv.conexao.nome} · ${quando(cv.atualizada_em)}`),
-      cv.ultima ? h('div', { class: 'pequeno' }, (cv.ultima_direcao === 'SAIDA' ? 'Você: ' : '') + cv.ultima.slice(0, 70)) : null)) : [vazio('Nenhuma conversa ainda')]));
-  } catch (e) { trocar(lista, erroBloco(e)); }
-  if (conversaId) carregarConversa(conversaId, detalhe);
-}
-
-async function carregarConversa(id, alvo) {
-  let cv;
-  try { cv = await apiOrg(`/conversas/${id}`); }
-  catch (e) { return trocar(alvo, e.status === 404 ? h('div', { class: 'cartao' }, vazio('Conversa não encontrada', 'Ela não existe ou não pertence ao seu escopo.')) : erroBloco(e)); }
-  const recarregar = () => carregarConversa(id, alvo);
-  const msg = h('div');
-  const chat = h('div', { class: 'chat', 'aria-live': 'polite' }, cv.mensagens.length ? cv.mensagens.map(m => h('div', { class: `bolha ${m.direcao === 'ENTRADA' ? 'entrada' : 'saida'}` }, m.texto,
-    h('div', { class: 'meta' }, quando(m.em), m.direcao === 'SAIDA' ? ` · ${m.usuario_nome || ''} · ${({ SIMULADA: 'simulada (teste)', NAO_ENVIADA_ENVIO_DESLIGADO: 'não enviada (envio real desligado)', ENVIADA: 'enviada', FALHOU: 'falhou' })[m.status] || m.status}` : '', m.erro ? ` · ${m.erro}` : ''))) : vazio('Sem mensagens'));
-  setTimeout(() => { chat.scrollTop = chat.scrollHeight; }, 0);
-
-  let verificacao = null;
-  if (!cv.verificada) {
-    const resultados = h('div');
-    const selResp = h('select', { id: 'v-resp', name: 'resp', required: true }, h('option', { value: '' }, cv.candidatos.length ? 'Escolha o responsável' : 'Busque o responsável abaixo'), cv.candidatos.map(r => h('option', { value: r.id, selected: cv.candidatos.length === 1 }, `${r.nome} (sugerido)`)));
-    const busca = h('input', {
-      type: 'search', placeholder: 'Buscar por nome ou código', 'aria-label': 'Buscar responsável', oninput: async e => {
-        const q = e.target.value.trim(); if (q.length < 3) return;
-        try { const r = await apiOrg(`/carteira?busca=${encodeURIComponent(q)}`); trocar(selResp, h('option', { value: '' }, 'Escolha o responsável'), cv.candidatos.map(x => h('option', { value: x.id }, `${x.nome} (sugerido)`)), r.itens.map(x => h('option', { value: x.id }, `${x.nome} · ${x.chave_origem}`))); } catch { /* ignora */ }
-      },
-    });
-    const f = h('form', {
-      class: 'grade', onsubmit: async ev => {
-        ev.preventDefault();
-        try { const r = await apiOrg(`/conversas/${id}/verificar`, { method: 'POST', body: { responsavel_id: selResp.value, matricula: f.mat.value } }); if (!r.telefone_confere) alertaFlutuante('Identidade confirmada. Atenção: o telefone desta conversa é diferente do cadastrado pela escola.', 'info'); recarregar(); }
-        catch (e) { trocar(resultados, aviso(e.message, 'erro', '⚠')); }
-      },
-    },
-    aviso(`Antes de falar do débito, confirme a identidade. Regra desta instituição: a pessoa informa a matrícula de um aluno vinculado. Busca limitada a ${cv.organizacao}.`, 'info', '🔒'),
-    h('div', { class: 'form-linha' }, h('div', { class: 'campo' }, h('label', {}, 'Responsável'), busca, selResp),
-      h('div', { class: 'campo' }, h('label', { for: 'mat' }, 'Matrícula informada'), h('input', { type: 'text', id: 'mat', name: 'mat', required: true }))),
-    resultados, h('div', {}, h('button', { class: 'botao', type: 'submit' }, 'Confirmar identidade')));
-    verificacao = h('section', { class: 'cartao' }, h('h2', {}, 'Confirmação do responsável'), h('br'), f);
+function multiConnectionMode(){return (state.connections||[]).length>1}
+function renderConnectionSelector(){const rows=state.connections||[],list=$('#connectionSelectorList'),manage=$('#manageConnectionsTop');if(!state.connectionFilter){try{state.connectionFilter=localStorage.getItem('balbino.connectionFilter')||'ALL'}catch{state.connectionFilter='ALL'}}if(state.connectionFilter!=='ALL'&&!rows.some(c=>c.id===state.connectionFilter))state.connectionFilter='ALL';if(manage)manage.classList.toggle('hidden',state.me?.role!=='SUPER_ADMIN');if(!list)return;const allActive=state.connectionFilter==='ALL';const allRow=`<div class="connection-menu-item connection-filter-item ${allActive?'selected':''}" data-connection-filter="ALL"><div class="connection-menu-avatar">∞</div><div class="connection-menu-main"><b>Todas as conexões</b><span>Mostrar todos os atendimentos</span></div></div>`;list.innerHTML=allRow+(rows.length?rows.map(c=>{const st=String(c.state||'DISCONNECTED').toLowerCase(),label={CONNECTED:'Conectado',CONNECTING:'Conectando',RECONNECTING:'Reconectando',DISCONNECTED:'Desconectado',ERROR:'Erro',EXPIRED:'Sessão expirada'}[String(c.state||'').toUpperCase()]||ptLabel(c.state||'Desconectado'),selected=state.connectionFilter===c.id;return `<div class="connection-menu-item connection-filter-item ${selected?'selected':''}" data-connection-filter="${esc(c.id)}"><div class="connection-menu-avatar">${esc(initials(connectionDisplayName(c)))}</div><div class="connection-menu-main"><b>${esc(connectionDisplayName(c))}</b><span>${esc(formatConnectionPhone(connectionDisplayPhone(c))||c.id||'')}</span></div><div class="connection-menu-state ${esc(st)}">${esc(label)}</div></div>`}).join(''):'<div class="empty">Nenhuma conexão cadastrada.</div>');$$('[data-connection-filter]').forEach(el=>el.onclick=async()=>{state.connectionFilter=el.dataset.connectionFilter||'ALL';try{localStorage.setItem('balbino.connectionFilter',state.connectionFilter)}catch{}renderConnectionSelector();updateTop();if($('#inbox')?.classList.contains('active'))await loadConversations('',{preserveChat:true});else if($('#matriculas')?.classList.contains('active'))await loadMatriculas();else if($('#groups')?.classList.contains('active'))await loadGroups($('#groupSearch')?.value||'')})}
+function updateTop(){const connected=state.connections.filter(c=>c.state==='CONNECTED').length,selected=state.connectionFilter&&state.connectionFilter!=='ALL'?state.connections.find(c=>c.id===state.connectionFilter):null,selectedOnline=selected?.state==='CONNECTED';$('#connTop').textContent=selected?connectionDisplayName(selected):`${connected} conex${connected===1?'ão':'ões'} ativa${connected===1?'':'s'}`;$('#connDot').style.background=selected?(selectedOnline?'var(--accent)':'var(--warn)'):(connected?'var(--accent)':'var(--warn)');const online=state.team.users.filter(u=>u.status==='ONLINE'&&u.active!==false).length;$('#onlineTop').textContent=`${online} atendentes online`;renderConnectionSelector()}
+function applyRoleUI(){
+  const role=state.me?.role||'AGENT';
+  const hide=role==='SUPER_ADMIN'?[]:role==='SUPERVISOR'?['connections','official','api','settings','queues','flows']:['automations','flows','queues','campaigns','officialTemplates','contactLists','reports','supervisor','connections','official','team','api','logs','settings','matriculas'];
+  for(const page of hide){const b=$(`.nav button[data-page="${page}"]`);if(b)b.classList.add('hidden')}
+  const isAdmin=role==='SUPER_ADMIN';
+  const canManageLeads=['SUPER_ADMIN','SUPERVISOR'].includes(role);
+  for(const id of ['leadImportBtn','leadSheetsBtn','leadDistributeBtn'])if($('#'+id))$('#'+id).classList.toggle('hidden',!canManageLeads);
+  if(role==='AGENT'){
+    leadView='mine';
+    for(const view of ['','unassigned']){const el=$(`.lead-view-chip[data-lead-view="${view}"]`);if(el)el.classList.add('hidden')}
   }
-
-  const envio = h('form', {
-    class: 'acoes', onsubmit: async ev => {
-      ev.preventDefault();
-      trocar(msg, );
-      try { await apiOrg(`/conversas/${id}/mensagens`, { method: 'POST', body: { texto: envio.texto.value } }); recarregar(); }
-      catch (e) { trocar(msg, aviso(e.message, 'erro', '⚠')); }
-    },
-  }, h('input', { type: 'text', name: 'texto', 'aria-label': 'Mensagem', placeholder: 'Escreva uma mensagem', required: true, class: 'campo-msg' }), h('button', { class: 'botao', type: 'submit' }, 'Enviar'));
-
-  const janela = cv.conexao.modo === 'OFICIAL' ? (cv.janela_aberta_ate && cv.janela_aberta_ate > Date.now() ? selo(`Janela de 24h aberta até ${quando(cv.janela_aberta_ate)}`, 'info', '⏱') : selo('Fora da janela de 24h: só modelo aprovado', 'atencao', '⏱')) : selo('Conexão de teste', 'neutro', '⚙');
-  trocar(alvo, 
-    h('section', { class: 'cartao' },
-      h('div', { class: 'cabecalho-pagina' }, h('div', {}, h('h2', {}, cv.caso?.responsavel?.nome || telefoneBR(cv.telefone)), h('p', { class: 'mudo pequeno' }, `${cv.organizacao} · ${cv.conexao.nome}`)),
-        h('div', { class: 'acoes' }, cv.verificada ? selo('Identidade confirmada', 'ok', '✓') : selo('Identidade não confirmada', 'atencao', '?'), janela,
-          cv.caso_id ? h('a', { class: 'botao secundario pequeno', href: `#/o/${estado.orgId}/caso/${cv.caso_id}` }, 'Abrir caso') : null)),
-      chat, h('br'), msg, envio,
-      !cv.verificada ? h('div', { class: 'mudo pequeno' }, 'Mensagens com valores ou débitos são bloqueadas até a confirmação.') : null),
-    verificacao,
-    cv.caso ? h('section', { class: 'cartao' }, h('h2', {}, 'Títulos do responsável'), h('br'),
-      h('table', {}, h('tbody', {}, cv.caso.titulos.map(t => h('tr', {}, h('td', {}, t.aluno_nome, h('div', { class: 'mudo pequeno' }, `${t.id_origem} · venc. ${dataBR(t.vencimento)}`)), h('td', { class: 'num' }, reais(t.saldo_centavos)), h('td', {}, seloTitulo(t))))))) : null);
+  document.body.classList.toggle('role-agent',role==='AGENT');
+  document.body.classList.toggle('role-super-admin',isAdmin);
+  const allowed=['WAITING','MINE','ALL','CLOSED'];
+  $$('#convFilters [data-filter]').forEach(b=>b.classList.toggle('hidden',!allowed.includes(b.dataset.filter)));
+  if(!allowed.includes(state.filter))state.filter=isAdmin?'ALL':'MINE';
+  if($('#filterConfig'))$('#filterConfig').classList.add('hidden');
+  syncAdminOverviewControls();
+  const officialModule=$('#officialNavModule');
+  if(officialModule){const visibleChildren=$$('#officialNavModule .nav-module-sub button[data-page]').some(b=>!b.classList.contains('hidden'));officialModule.classList.toggle('hidden',!visibleChildren);}
+  
+  $$('[data-nav-module]').forEach(module=>{const visible=[...module.querySelectorAll('button[data-page]')].some(b=>!b.classList.contains('hidden'));module.classList.toggle('hidden',!visible)});
+  syncNavModules(null,false);
 }
 
-// ---------- Importação ----------
-async function paginaImportar(loteId) {
-  const area = h('div');
-  const historico = h('div', {}, carregando());
-  const ctx = estado.ctx;
-  const form = pode('carteira.importar') ? h('form', {
-    class: 'grade', onsubmit: async ev => {
-      ev.preventDefault();
-      const arq = form.arquivo.files[0];
-      if (!arq) return;
-      trocar(area, carregando('Lendo arquivo e montando a prévia…'));
-      try {
-        const buf = new Uint8Array(await arq.arrayBuffer());
-        let bin = ''; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-        const r = await apiOrg('/lotes', { method: 'POST', body: { arquivo_nome: arq.name, conteudo_base64: btoa(bin), data_referencia: form.ref.value, escopo: form.escopo.value, tipo: 'CARTEIRA' } });
-        ir(`#/o/${estado.orgId}/importar/${r.id}`);
-      } catch (e) { trocar(area, aviso(e.message, 'erro', '⚠')); }
-    },
-  },
-  h('div', { class: 'form-linha' },
-    h('div', { class: 'campo' }, h('label', { for: 'arquivo' }, 'Arquivo da escola (CSV ou XLSX)'), h('input', { type: 'file', id: 'arquivo', name: 'arquivo', accept: '.csv,.xlsx,text/csv', required: true })),
-    h('div', { class: 'campo' }, h('label', { for: 'ref' }, 'Data de referência dos saldos'), h('input', { type: 'date', id: 'ref', name: 'ref', value: hojeISO(), max: hojeISO(), required: true })),
-    h('div', { class: 'campo' }, h('label', { for: 'escopo' }, 'O arquivo traz'), h('select', { id: 'escopo', name: 'escopo' }, h('option', { value: 'COMPLETA' }, 'Toda a carteira em aberto das unidades do arquivo'), h('option', { value: 'PARCIAL' }, 'Só parte dos títulos (não sinaliza ausentes)')))),
-  h('div', { class: 'mudo pequeno' }, 'Colunas: id_titulo, unidade, responsavel_id, responsavel_nome, telefone, contato_autorizado, aluno_matricula, aluno_nome, competencia, vencimento, valor, saldo, situacao. CPF completo não é necessário (só os 4 últimos dígitos são guardados).'),
-  h('div', {}, h('button', { class: 'botao', type: 'submit' }, 'Gerar prévia'))) : null;
-
-  moldura('importar', h('div', {},
-    cabecalho(pode('carteira.importar') ? 'Importar carteira' : 'Importações', `${ctx.organizacao.nome} · nada muda na carteira até você aplicar a prévia.`),
-    form ? h('section', { class: 'cartao' }, form) : null,
-    h('br'), area, h('br'),
-    h('section', { class: 'cartao' }, h('h2', {}, 'Lotes'), h('br'), historico)));
-
-  if (loteId) mostrarLote(loteId, area);
-  try {
-    const lotes = await apiOrg('/lotes');
-    trocar(historico, lotes.length ? h('div', { class: 'tabela-wrap' }, h('table', {},
-      h('thead', {}, h('tr', {}, ['Arquivo', 'Referência', 'Situação', 'Novos', 'Alterados', 'Rejeitados', 'Ausentes', 'Por'].map(t => h('th', {}, t)))),
-      h('tbody', {}, lotes.map(l => h('tr', { class: 'clicavel', onclick: () => ir(`#/o/${estado.orgId}/importar/${l.id}`) },
-        h('td', {}, l.arquivo_nome, h('div', { class: 'mudo pequeno' }, quando(l.criado_em))), h('td', {}, dataBR(l.data_referencia)),
-        h('td', {}, l.status === 'APLICADO' ? selo('Aplicado', 'ok', '✓') : l.status === 'PREVIA' ? selo('Prévia', 'info', '…') : selo('Descartado', 'neutro', '–')),
-        h('td', { class: 'num' }, l.resumo.novos), h('td', { class: 'num' }, l.resumo.alterados), h('td', { class: 'num' }, l.resumo.rejeitados), h('td', { class: 'num' }, l.resumo.ausentes), h('td', {}, l.usuario_nome)))))) : vazio('Nenhum lote importado'));
-  } catch (e) { trocar(historico, erroBloco(e)); }
-}
-
-async function mostrarLote(id, alvo) {
-  trocar(alvo, carregando());
-  let l;
-  try { l = await apiOrg(`/lotes/${id}`); } catch (e) { return trocar(alvo, erroBloco(e)); }
-  const r = l.resumo;
-  const msg = h('div');
-  const agir = async acao => { try { await apiOrg(`/lotes/${id}/${acao}`, { method: 'POST', body: {} }); await carregarCtx(); paginaImportar(id); } catch (e) { trocar(msg, aviso(e.message, 'erro', '⚠')); } };
-  const linhasProblema = l.linhas.filter(x => ['REJEITADO', 'REPETIDO'].includes(x.status) || x.motivo);
-  trocar(alvo, h('section', { class: 'cartao' },
-    h('div', { class: 'cabecalho-pagina' }, h('div', {}, h('h2', {}, `${l.status === 'PREVIA' ? 'Prévia' : l.status === 'APLICADO' ? 'Lote aplicado' : 'Lote descartado'} · ${l.arquivo_nome}`),
-      h('p', { class: 'mudo pequeno' }, `Referência ${dataBR(l.data_referencia)} · ${l.escopo === 'COMPLETA' ? 'carteira completa' : 'parcial'} · por ${l.usuario_nome} em ${quando(l.criado_em)}`)),
-    l.status === 'PREVIA' && pode('carteira.importar') ? h('div', { class: 'acoes' }, h('button', { class: 'botao', onclick: () => agir('aplicar') }, r.novos + r.alterados ? `Aplicar ${r.novos + r.alterados} mudança(s)` : 'Aplicar (sem mudanças na carteira)'), h('button', { class: 'botao secundario', onclick: () => agir('descartar') }, 'Descartar')) : null),
-    msg,
-    r.arquivo_ja_aplicado_em ? aviso(`Este mesmo arquivo já foi aplicado em ${quando(r.arquivo_ja_aplicado_em)}. Reaplicar não duplica registros.`, 'info', 'ℹ') : null,
-    h('div', { class: 'grade grade-4' }, ind('Válidos', r.validos, `${r.novos} novos · ${r.alterados} alterados · ${r.sem_mudanca} sem mudança`), ind('Repetidos', r.repetidos, 'linhas idênticas ignoradas'), ind('Rejeitados', r.rejeitados, 'ver motivos abaixo'), ind('Ausentes', r.ausentes, 'em aberto antes, fora deste arquivo')),
-    r.ausentes ? h('div', {}, h('br'), aviso(`${r.ausentes} título(s) em aberto não vieram neste arquivo (${r.ausentes_ids.slice(0, 8).join(', ')}${r.ausentes > 8 ? '…' : ''}). Ausência não comprova pagamento: os títulos ficam pausados e sinalizados para conferência com a escola.`, 'atencao', '?')) : null,
-    h('br'),
-    linhasProblema.length ? h('div', { class: 'tabela-wrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Linha', 'Título', 'Responsável', 'Situação', 'Motivo'].map(t => h('th', {}, t)))),
-      h('tbody', {}, linhasProblema.map(x => h('tr', {}, h('td', {}, x.linha), h('td', {}, x.id_titulo || '—'), h('td', {}, x.responsavel || '—'),
-        h('td', {}, x.status === 'REJEITADO' ? selo('Rejeitado', 'alerta', '✕') : x.status === 'REPETIDO' ? selo('Repetido', 'neutro', '=') : selo(x.status === 'NOVO' ? 'Novo com aviso' : 'Com aviso', 'atencao', '!')),
-        h('td', {}, x.motivo || '')))))) : aviso('Nenhuma linha rejeitada.', 'ok', '✓')));
-}
-
-// ---------- Administração ----------
-async function paginaAdminInstituicoes() {
-  const area = h('div', {}, carregando());
-  moldura('#/admin/instituicoes', h('div', {}, cabecalho('Instituições', 'Cada instituição tem carteira, conexões e acessos separados. Unidades são opcionais.'), area));
-  const carregar = async () => {
-    try {
-      const orgs = await api('/api/admin/organizacoes');
-      const nova = h('form', {
-        class: 'form-linha', onsubmit: async ev => { ev.preventDefault(); try { await api('/api/admin/organizacoes', { method: 'POST', body: { nome: nova.nome.value } }); await carregarEu(); carregar(); } catch (e) { alertaFlutuante(e.message); } },
-      }, h('div', { class: 'campo' }, h('label', { for: 'nome-org' }, 'Nova instituição'), h('input', { type: 'text', id: 'nome-org', name: 'nome', required: true, placeholder: 'Nome da escola' })), h('div', {}, h('button', { class: 'botao' }, 'Cadastrar')));
-      trocar(area, h('section', { class: 'cartao' }, nova), ...await Promise.all(orgs.map(async o => {
-        const [unidades, conexoes] = await Promise.all([api(`/api/admin/organizacoes/${o.id}/unidades`), api(`/api/admin/organizacoes/${o.id}/conexoes`)]);
-        const fu = h('form', { class: 'form-linha', onsubmit: async ev => { ev.preventDefault(); try { await api(`/api/admin/organizacoes/${o.id}/unidades`, { method: 'POST', body: { nome: fu.nome.value, codigo: fu.codigo.value } }); carregar(); } catch (e) { alertaFlutuante(e.message); } } },
-          h('div', { class: 'campo' }, h('label', {}, 'Unidade'), h('input', { type: 'text', name: 'nome', required: true, placeholder: 'Nome' })), h('div', { class: 'campo' }, h('label', {}, 'Código no arquivo'), h('input', { type: 'text', name: 'codigo', required: true, placeholder: 'Ex.: CEN' })), h('div', {}, h('button', { class: 'botao secundario' }, 'Adicionar unidade')));
-        const fc = h('form', {
-          class: 'grade', onsubmit: async ev => {
-            ev.preventDefault();
-            try { await api(`/api/admin/organizacoes/${o.id}/conexoes`, { method: 'POST', body: { nome: fc.nome.value, modo: fc.modo.value, phone_number_id: fc.pnid.value, waba_id: fc.waba.value, token_env: fc.tok.value, modelo_primeiro_contato: fc.modelo.value, numero_exibicao: fc.num.value } }); carregar(); }
-            catch (e) { alertaFlutuante(e.message); }
-          },
-        },
-        h('div', { class: 'form-linha' },
-          h('div', { class: 'campo' }, h('label', {}, 'Nome da conexão'), h('input', { type: 'text', name: 'nome', required: true })),
-          h('div', { class: 'campo' }, h('label', {}, 'Modo'), h('select', { name: 'modo', onchange: e => fc.querySelector('.so-oficial').classList.toggle('oculto', e.target.value !== 'OFICIAL') }, h('option', { value: 'TESTE' }, 'Teste (não envia)'), h('option', { value: 'OFICIAL' }, 'API oficial (Meta)'))),
-          h('div', { class: 'campo' }, h('label', {}, 'Número exibido'), h('input', { type: 'text', name: 'num' }))),
-        h('div', { class: 'form-linha so-oficial oculto' },
-          h('div', { class: 'campo' }, h('label', {}, 'Phone Number ID'), h('input', { type: 'text', name: 'pnid', inputmode: 'numeric' })),
-          h('div', { class: 'campo' }, h('label', {}, 'WABA ID'), h('input', { type: 'text', name: 'waba' })),
-          h('div', { class: 'campo' }, h('label', {}, 'Variável do token'), h('input', { type: 'text', name: 'tok', placeholder: 'META_TOKEN_ESCOLA' }), h('span', { class: 'ajuda' }, 'O token fica no ambiente do servidor, não no banco.')),
-          h('div', { class: 'campo' }, h('label', {}, 'Modelo de primeiro contato'), h('input', { type: 'text', name: 'modelo', placeholder: 'nome_do_modelo_aprovado' }))),
-        h('div', {}, h('button', { class: 'botao secundario' }, 'Adicionar conexão')));
-        return h('section', { class: 'cartao' },
-          h('div', { class: 'cabecalho-pagina' }, h('div', {}, h('h2', {}, o.nome), h('p', { class: 'mudo pequeno' }, `${o.usuarios} usuário(s) · saldo válido por ${o.dias_saldo_valido} dias · verificação: matrícula do aluno`)), o.ativa ? selo('Ativa', 'ok', '✓') : selo('Inativa', 'neutro', '–')),
-          h('h3', {}, 'Unidades'), unidades.length ? h('p', {}, unidades.map(u => selo(`${u.nome} · ${u.codigo}`, 'info')).flatMap(x => [x, ' '])) : h('p', { class: 'mudo pequeno' }, 'Sem unidades (opcional).'), fu, h('br'),
-          h('h3', {}, 'Conexões de WhatsApp'),
-          conexoes.length ? h('ul', {}, conexoes.map(c => h('li', {}, `${c.nome} · ${c.modo === 'OFICIAL' ? 'API oficial' : 'teste'}${c.numero_exibicao ? ' · ' + c.numero_exibicao : ''} `, c.ativa ? selo('Ativa', 'ok', '✓') : selo('Inativa', 'neutro', '–'),
-            c.modo === 'OFICIAL' ? [' ', c.token_configurado ? selo('Token configurado', 'ok', '🔑') : selo(`Token ausente (${c.token_env})`, 'alerta', '⚠'), ' ', c.modelo_primeiro_contato ? selo(`Modelo: ${c.modelo_primeiro_contato}`, 'info') : selo('Sem modelo aprovado', 'atencao', '!')] : null))) : h('p', { class: 'mudo pequeno' }, 'Nenhuma conexão.'),
-          fc);
-      })));
-    } catch (e) { trocar(area, erroBloco(e, carregar)); }
-  };
-  carregar();
-}
-
-async function paginaAdminUsuarios() {
-  const area = h('div', {}, carregando());
-  moldura('#/admin/usuarios', h('div', {}, cabecalho('Usuários e permissões', 'O acesso é dado por instituição. Sem acesso explícito, o usuário não vê a instituição.'), area));
-  const carregar = async () => {
-    try {
-      const [us, orgs] = await Promise.all([api('/api/admin/usuarios'), api('/api/admin/organizacoes')]);
-      const unidadesPorOrg = Object.fromEntries(await Promise.all(orgs.map(async o => [o.id, await api(`/api/admin/organizacoes/${o.id}/unidades`)])));
-      const novo = h('form', {
-        class: 'form-linha', onsubmit: async ev => { ev.preventDefault(); try { await api('/api/admin/usuarios', { method: 'POST', body: { nome: novo.nome.value, login: novo.login.value, senha: novo.senha.value, admin: novo.adm.checked } }); carregar(); } catch (e) { alertaFlutuante(e.message); } },
-      },
-      h('div', { class: 'campo' }, h('label', {}, 'Nome'), h('input', { type: 'text', name: 'nome', required: true })),
-      h('div', { class: 'campo' }, h('label', {}, 'Login'), h('input', { type: 'text', name: 'login', required: true })),
-      h('div', { class: 'campo' }, h('label', {}, 'Senha inicial'), h('input', { type: 'password', name: 'senha', required: true, minlength: 10, autocomplete: 'new-password' })),
-      h('label', { class: 'pequeno' }, h('input', { type: 'checkbox', name: 'adm' }), ' Administrador da GO Negocia'),
-      h('div', {}, h('button', { class: 'botao' }, 'Criar usuário')));
-      const acessoForm = u => {
-        const f = h('form', {
-          class: 'form-linha', onsubmit: async ev => {
-            ev.preventDefault();
-            const unidades = [...f.querySelectorAll('input[name=un]:checked')].map(x => x.value);
-            try { await api(`/api/admin/usuarios/${u.id}/acessos/${f.org.value}`, { method: 'PUT', body: { papel: f.papel.value || null, unidades } }); carregar(); } catch (e) { alertaFlutuante(e.message); }
-          },
-        },
-        h('div', { class: 'campo' }, h('label', {}, 'Instituição'), h('select', { name: 'org', onchange: e => { trocar(uns, ...(unidadesPorOrg[e.target.value] || []).map(x => h('label', { class: 'pequeno' }, h('input', { type: 'checkbox', name: 'un', value: x.id }), ` ${x.nome} `))); } }, orgs.map(o => h('option', { value: o.id }, o.nome)))),
-        h('div', { class: 'campo' }, h('label', {}, 'Perfil'), h('select', { name: 'papel' }, h('option', { value: 'ATENDENTE' }, 'Atendente'), h('option', { value: 'SUPERVISOR' }, 'Supervisor'), h('option', { value: 'REPRESENTANTE' }, 'Representante da instituição'), h('option', { value: '' }, 'Remover acesso'))),
-        h('div', {}, h('button', { class: 'botao secundario pequeno' }, 'Salvar acesso')));
-        const uns = h('div', { class: 'campo' }, (unidadesPorOrg[orgs[0]?.id] || []).map(x => h('label', { class: 'pequeno' }, h('input', { type: 'checkbox', name: 'un', value: x.id }), ` ${x.nome} `)));
-        f.insertBefore(h('div', { class: 'campo' }, h('label', {}, 'Unidades (vazio = todas)'), uns), f.lastChild);
-        return f;
-      };
-      trocar(area, h('section', { class: 'cartao' }, h('h2', {}, 'Novo usuário'), h('br'), novo),
-        ...us.map(u => h('section', { class: 'cartao' },
-          h('div', { class: 'cabecalho-pagina' }, h('div', {}, h('h3', {}, u.nome), h('p', { class: 'mudo pequeno' }, u.login)), h('div', { class: 'acoes' }, u.admin ? selo('Administrador', 'info') : null, u.ativo ? selo('Ativo', 'ok', '✓') : selo('Inativo', 'neutro', '–'))),
-          u.admin ? h('p', { class: 'mudo pequeno' }, 'Acesso a todas as instituições.') : u.acessos.length ? h('ul', {}, u.acessos.map(a => h('li', {}, `${a.organizacao}: ${({ SUPERVISOR: 'Supervisor', ATENDENTE: 'Atendente', REPRESENTANTE: 'Representante' })[a.papel]} · ${a.todas_unidades ? 'todas as unidades' : (unidadesPorOrg[a.organizacao_id] || []).filter(x => a.unidades.includes(x.id)).map(x => x.nome).join(', ')}`))) : h('p', { class: 'mudo pequeno' }, 'Sem acesso a nenhuma instituição.'),
-          u.admin ? null : acessoForm(u))));
-    } catch (e) { trocar(area, erroBloco(e, carregar)); }
-  };
-  carregar();
-}
-
-// ---------- roteamento ----------
-async function carregarCtx() { estado.ctx = await apiOrg('/contexto'); }
-
-async function render() {
-  if (!estado.eu) await carregarEu();
-  const partes = location.hash.replace(/^#\/?/, '').split('/');
-  if (!estado.eu) return telaLogin();
-  if (partes[0] === 'login') return ir('#/');
-  if (partes[0] === 'admin') {
-    estado.orgId = null; estado.ctx = null;
-    if (!estado.eu.usuario.admin) return ir('#/');
-    return partes[1] === 'usuarios' ? paginaAdminUsuarios() : paginaAdminInstituicoes();
+function syncAdminOverviewControls(){
+  const box=$('#adminOverviewFilters');if(!box)return;
+  const visible=state.me?.role==='SUPER_ADMIN'&&['ALL','CLOSED'].includes(state.filter);
+  box.classList.toggle('hidden',!visible);
+  if(!visible)return;
+  const owner=$('#adminOwnerFilter'),queue=$('#adminQueueFilter');
+  if(owner){
+    const current=state.adminOwnerFilter||'';
+    owner.innerHTML=`<option value="">Todos os responsáveis</option>${(state.team?.users||[]).filter(u=>u.active!==false).map(u=>`<option value="${esc(u.id)}" ${u.id===current?'selected':''}>${esc(u.name)}</option>`).join('')}`;
+    owner.value=current;
   }
-  if (partes[0] === 'o' && partes[1]) {
-    if (estado.orgId !== partes[1] || !estado.ctx) {
-      estado.orgId = partes[1];
-      try { await carregarCtx(); } catch (e) {
-        estado.ctx = null;
-        moldura('', h('div', { class: 'cartao' }, e.status === 404 ? vazio('Instituição não encontrada', 'Ela não existe ou você não tem acesso a ela.') : erroBloco(e)));
-        estado.orgId = null;
+  if(queue){
+    const current=state.adminQueueFilter||'';
+    queue.innerHTML=`<option value="">Todas as filas</option>${(state.team?.departments||[]).filter(d=>d.active!==false).map(d=>`<option value="${esc(d.id)}" ${d.id===current?'selected':''}>${esc(d.name)}</option>`).join('')}`;
+    queue.value=current;
+  }
+}
+function applyAdminOverviewFilters(rows){
+  if(state.me?.role!=='SUPER_ADMIN'||!['ALL','CLOSED'].includes(state.filter))return rows;
+  return rows.filter(c=>{
+    if(state.adminOwnerFilter&&c.ownerId!==state.adminOwnerFilter)return false;
+    if(state.adminQueueFilter&&c.departmentId!==state.adminQueueFilter)return false;
+    return true;
+  });
+}
+
+function applyConversationSubfilter(rows){
+  const base=Array.isArray(rows)?rows:[];
+  if(state.filter!=='MINE')return base;
+  if(state.conversationSubfilter==='UNREAD')return base.filter(c=>Number(c.unread||0)>0);
+  return base;
+}
+function syncConversationSubfilters(){
+  const box=$('#convSubFilters');if(!box)return;
+  const visible=state.filter==='MINE';box.classList.toggle('hidden',!visible);
+  $('#convSubFilterWrap')?.classList.toggle('hidden',!visible);
+  if(!visible)state.conversationSubfilter='ALL';
+}
+
+function secondaryFilterCounts(rows){
+  const base=Array.isArray(rows)?rows:[];
+  return {ALL:base.length,UNREAD:base.filter(c=>Number(c.unread||0)>0).length};
+}
+function currentPrimaryFilterLabel(){
+  return state.filter==='WAITING'?'na fila':state.filter==='MINE'?'em atendimento':state.filter==='CLOSED'?'finalizada':'no total';
+}
+
+
+function updateConversationFilterCounts(){
+  const counts=state.conversationStats||{};
+  const labels={WAITING:'Fila',MINE:'Meus',ALL:'Todas'};
+  $$('#convFilters .chip').forEach(b=>{
+    const f=b.dataset.filter,count=Number(counts[f]||0);
+    b.innerHTML=`<span>${labels[f]||f}</span><span class="filter-badge">${count}</span>`;
+    b.classList.toggle('active',f===state.filter);
+    b.title=f==='WAITING'?`${count} conversa${count===1?'':'s'} aguardando atendimento`:f==='MINE'?`${count} conversa${count===1?'':'s'} sob sua responsabilidade`:`${count} conversa${count===1?'':'s'} que você pode visualizar`;
+  });
+  const closedBtn=$('#closedConversationsBtn'),closedCount=Number(counts.CLOSED||0);
+  if(closedBtn){closedBtn.classList.toggle('active',state.filter==='CLOSED');closedBtn.title=`${closedCount} atendimento${closedCount===1?'':'s'} finalizado${closedCount===1?'':'s'}`;}
+  if($('#closedConversationsCount'))$('#closedConversationsCount').textContent=closedCount;
+  syncConversationSubfilters();
+  const subCounts=secondaryFilterCounts(state.allConversations||[]),subLabels={ALL:'Todos',UNREAD:'Não lidas'};
+  $$('#convSubFilters .chip').forEach(b=>{
+    const f=b.dataset.subfilter,count=Number(subCounts[f]||0);
+    b.innerHTML=`<span>${subLabels[f]||f}</span><span class="filter-badge">${count}</span>`;
+    b.classList.toggle('active',f===state.conversationSubfilter);
+    b.title=f==='UNREAD'?`${count} conversa${count===1?'':'s'} não lida${count===1?'':'s'} dentro do filtro atual`:`${count} conversa${count===1?'':'s'} no filtro atual`;
+  });
+  $('#navUnread').textContent=Number(counts.UNREAD||0);
+  syncAdminOverviewControls();
+  const summary=$('#conversationListSummary');
+  if(summary){const unreadSuffix=state.conversationSubfilter==='UNREAD'?' não lida':'';summary.textContent=`${state.conversations.length} conversa${state.conversations.length===1?'':'s'} ${currentPrimaryFilterLabel()}${unreadSuffix}`;}
+}
+
+async function loadDashboard(){
+  const [d,sys]=await Promise.all([api('/api/dashboard'),api('/api/system/info').catch(()=>null)]);
+  if($('#autoTop')){$('#autoTop').textContent=d.autoRepliesEnabled?'Automação ON':'Automação OFF';$('#autoTop').style.color=d.autoRepliesEnabled?'var(--accent)':'var(--muted)'}
+  $('#dashboardCards').innerHTML=[['Conversas hoje',d.todayConversations],['Aguardando',d.waiting],['Abertas',d.open],['Satisfação',d.csat],['Contatos CRM',d.contacts],['Agendadas',d.scheduled],['Pendências abertas',d.followups],['WhatsApp ativo',d.connected]].map(x=>`<div class="card pad kpi"><div class="label">${x[0]}</div><div class="value">${x[1]}</div></div>`).join('');
+  $('#navUnread').textContent=Number(d.unread||0);$('#queueBox').innerHTML=(d.byDepartment||[]).map(dep=>`<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line)"><b>${esc(dep.name)}</b><span class="muted">${dep.count} em andamento</span></div>`).join('');
+  const mb=n=>n==null?'—':`${Math.round(Number(n)/1024/1024)} MB`,pct=n=>n==null?'—':`${n}%`,connected=Number(d.connected||0)>0,errors=Number(sys?.recentErrors?.length||0),critical=Number(sys?.queues?.critical||0),diskWarn=Number(sys?.disk?.usedPercent||0)>=90;
+  $('#healthBox').innerHTML=`<div class="health-grid"><div class="health-item ${connected?'health-ok':'health-warn'}"><b>${connected?'● WhatsApp conectado':'● WhatsApp desconectado'}</b><span>${Number(d.connected||0)} conexão(ões) ativa(s)</span></div><div class="health-item health-ok"><b>● Banco / API</b><span>${esc(sys?.storage?.engine||'SQLite')} • ${Number(sys?.storage?.messages||0)} mensagens</span></div><div class="health-item ${critical?'health-bad':'health-ok'}"><b>${critical?'● SLA crítico':'● Filas saudáveis'}</b><span>${critical} crítico(s) • ${Number(sys?.queues?.waiting||d.waiting||0)} aguardando</span></div><div class="health-item ${diskWarn?'health-bad':'health-ok'}"><b>${diskWarn?'● Disco em atenção':'● Armazenamento'}</b><span>${pct(sys?.disk?.usedPercent)} usado • ${mb(sys?.disk?.availableBytes)} livres</span></div><div class="health-item health-ok"><b>● Servidor</b><span>RAM ${mb(sys?.memory?.rssBytes)} • uptime ${fmtDuration(sys?.uptimeSeconds||0)}</span></div><div class="health-item ${errors?'health-warn':'health-ok'}"><b>${errors?'● Eventos de erro recentes':'● Sem erros recentes'}</b><span>${errors} registro(s) recente(s)</span></div></div>`;
+}
+async function loadConversations(q='',opts={}){
+  const isAdmin=state.me?.role==='SUPER_ADMIN';
+  const allowed=['WAITING','MINE','ALL','CLOSED'];
+  if(!allowed.includes(state.filter))state.filter=isAdmin?'ALL':'MINE';
+  if(!['ALL','UNREAD'].includes(state.conversationSubfilter||'ALL'))state.conversationSubfilter='ALL';
+  if(state.filter!=='MINE')state.conversationSubfilter='ALL';
+  const filter=state.filter||'MINE',limit=['ALL','CLOSED'].includes(filter)?200:80,instanceParam=state.connectionFilter&&state.connectionFilter!=='ALL'?`&instanceId=${encodeURIComponent(state.connectionFilter)}`:'';
+  const [rawRows,stats]=await Promise.all([
+    api(`/api/conversations?q=${encodeURIComponent(q)}&filter=${encodeURIComponent(filter)}&limit=${limit}${instanceParam}&_=${Date.now()}`),
+    api(`/api/conversations/stats?${instanceParam?instanceParam.slice(1):''}`)
+  ]);
+  state.conversationStats=stats;
+  state.allConversations=applyAdminOverviewFilters(rawRows);
+  state.conversations=applyConversationSubfilter(state.allConversations);
+  updateConversationFilterCounts();renderConversations();
+  const currentVisible=state.current&&state.conversations.some(c=>c.id===state.current.id);
+  if(currentVisible){state.current=state.conversations.find(c=>c.id===state.current.id);if(!opts.preserveChat)renderChat(false);else applyConversationLockUI();return;}
+  const currentStillExists=state.current&&state.allConversations.some(c=>c.id===state.current.id);
+  if(currentStillExists){state.current=state.allConversations.find(c=>c.id===state.current.id)||state.current;if(!opts.preserveChat)renderChat(false);else applyConversationLockUI();return;}
+  // Em multiconexão, uma consolidação/reparo pode trocar o ID interno da conversa.
+  // Se isso ocorrer, reencontra a conversa pelo par conexão + telefone remoto em vez de "fechar" a tela.
+  if(state.current){
+    const digits=v=>String(v||'').replace(/\D/g,'');
+    const currentPhone=digits(state.current.contact?.phone),currentInstance=String(state.current.instanceId||'');
+    const replacement=state.allConversations.find(c=>String(c.instanceId||'')===currentInstance&&currentPhone&&digits(c.contact?.phone)===currentPhone);
+    if(replacement){
+      const oldId=state.current.id;state.current=replacement;state.pinnedConversationId=null;
+      if(oldId!==replacement.id){state.messages=[];state.messagePaging={hasMore:false,oldestAt:null,loading:false};state.currentLock=null;selectConversation(replacement.id).catch(()=>{});}
+      else if(!opts.preserveChat)renderChat(false);else applyConversationLockUI();
+      return;
+    }
+  }
+  const keepPinned=state.current&&state.pinnedConversationId===state.current.id&&['CLOSED','HISTORY'].includes(state.current.status);
+  if(keepPinned){renderChat(false);return;}
+  state.current=null;state.pinnedConversationId=null;state.messages=[];state.messagePaging={hasMore:false,oldestAt:null,loading:false};renderEmptyConversation();
+}
+function renderEmptyConversation(){closeQuickSlashPopover();closeDetails();closeChatMoreMenu();document.querySelector('.chat')?.classList.remove('has-conversation');$('#pendBtn')?.classList.add('hidden');
+  $('#chatName').textContent='Selecione uma conversa';$('#chatAvatar').textContent='--';$('#chatMeta').textContent='';if($('#chatConnectionInfo')){$('#chatConnectionInfo').innerHTML='';$('#chatConnectionInfo').classList.add('hidden')}if($('#composerConnectionInfo')){$('#composerConnectionInfo').innerHTML='';$('#composerConnectionInfo').classList.add('hidden')}if($('#chatQueueBadge')){$('#chatQueueBadge').textContent='';$('#chatQueueBadge').className='chat-queue-pill hidden'}if($('#chatStateBadge')){$('#chatStateBadge').textContent='—';$('#chatStateBadge').className='chat-status-pill hidden'}for(const id of ['claimBtn','statusBtn','transferBtn','closeBtn','moreActionsBtn','deleteConversationBtn'])$('#'+id)?.classList.add('hidden');$('#chatTyping').textContent='';$('#contactSummaryStrip')?.classList.add('hidden');$('#messages').innerHTML='<div class="empty">Selecione uma conversa para visualizar o atendimento.</div>';$('#contactSide').innerHTML='';for(const id of ['composer','sendBtn','attachBtn','recordBtn','quickBtn','aiBtn','noteBtn']){const el=$('#'+id);if(el)el.disabled=true}if($('#composer'))$('#composer').placeholder='Selecione uma conversa para começar';
+}
+function renderConversations(){
+  const el=$('#conversationList');
+  el.innerHTML=state.conversations.length?state.conversations.map(c=>{
+    const waiting=!c.ownerId&&['OPEN','WAITING'].includes(c.status),q=conversationQueue(c);
+    const statusText={WAITING_CUSTOMER:'Aguardando cliente',WAITING_INTERNAL:'Aguardando setor interno'}[c.status]||'';const waitText=waiting&&Number(c.waitSeconds||0)?` • espera ${fmtDuration(c.waitSeconds)}`:'';const secondary=c.status==='CLOSED'?`Finalizado ${fmtDate(c.closedAt||c.updatedAt)}${c.owner?.name?` • ${esc(c.owner.name)}`:''}`:c.isGroup?`Grupo • ${Number(c.group?.size||0)} participantes`:c.status==='HISTORY'?'Histórico sincronizado':waiting?(c.triageStatus==='AWAITING_CHOICE'?'Triagem • aguardando escolha':`${c.triageStatus==='ROUTED'?'Aguardando atendente':'Disponível para a equipe'}${waitText}`):statusText?`${statusText}${c.owner?.name?` • ${esc(c.owner.name)}`:''}`:c.owner?.name?`Responsável: ${esc(c.owner.name)}`:'Sem responsável';
+    const queueHtml=queueBadgeHtml(c),closedBadge=c.status==='CLOSED'?'<span class="closed-conversation-badge">Finalizado</span>':'',conn=connectionForConversation(c),connectionBadge=multiConnectionMode()&&conn?`<span class="connection-conv-badge" title="WhatsApp • ${esc(connectionDisplayName(conn))}${connectionDisplayPhone(conn)?' • '+esc(formatConnectionPhone(connectionDisplayPhone(conn))):''}">WA • ${esc(connectionDisplayName(conn))}</span>`:'';
+    const sla=c.slaState==='CRITICAL'?'<span class="attention-badge">SLA crítico</span>':c.slaState==='WARNING'?'<span class="triage-pill">SLA atenção</span>':'';return `<div class="conv ${state.current?.id===c.id?'active':''}" data-id="${c.id}" data-status="${esc(c.status||'')}"><div class="avatar">${avatarMarkup(c)}</div><div style="min-width:0"><div class="name">${esc(c.contact?.name||c.contact?.phone)}</div><div class="preview">${c.priority==='HIGH'?'🔴 ':''}${esc(previewText(c.lastMessage))}</div><div class="conv-queue-row">${queueHtml}${connectionBadge}${closedBadge}${c.triageStatus==='AWAITING_CHOICE'?'<span class="triage-pill">Aguardando escolha</span>':''}${sla}</div>${secondary?`<div class="owner-label">${secondary}</div>`:''}</div><div style="text-align:right"><div class="small muted">${fmtDate(c.updatedAt).split(' ').at(-1)||''}</div>${c.unread?`<span class="unread">${c.unread}</span>`:''}</div></div>`
+  }).join(''):`<div class="empty">${state.filter==='CLOSED'?'Nenhum atendimento finalizado.':'Nenhuma conversa neste filtro.'}</div>`;
+  $$('.conv').forEach(x=>x.onclick=()=>selectConversation(x.dataset.id));
+  const summary=$('#conversationListSummary');if(summary){if(state.filter==='CLOSED'){const n=state.conversations.length;summary.textContent=n===1?'1 conversa finalizada':`${n} conversas finalizadas`;}else{const unreadSuffix=state.conversationSubfilter==='UNREAD'?' não lida':'';summary.textContent=`${state.conversations.length} conversa${state.conversations.length===1?'':'s'} ${currentPrimaryFilterLabel()}${unreadSuffix}`;}};
+}
+async function selectConversation(id){
+  const selected=state.conversations.find(c=>c.id===id)||state.allConversations.find(c=>c.id===id)||state.current;if(!selected)return;
+  state.pinnedConversationId=null;
+  state.current=selected;state.replyTo=null;state.presence={jid:null,typing:false,participants:[]};closeDetails();closeChatMoreMenu();renderReplyStrip();renderConversations();document.querySelector('.inbox')?.classList.add('mobile-chat-open');prepareConversationBottom();
+  const box=$('#messages');if(box)box.innerHTML='<div class="empty">Carregando conversa…</div>';
+  try{const d=await api(`/api/conversations/${id}/messages?paged=1&limit=120`);state.messages=Array.isArray(d.messages)?d.messages:[];state.messagePaging={hasMore:!!d.hasMore,oldestAt:d.oldestAt||null,loading:false};state.currentLock=d.lock||null;state.current.claimable=Boolean(d.claimable||(!state.current.ownerId&&['OPEN','WAITING'].includes(state.current.status)));if(state.current.ownerId===state.me?.id)state.current.unread=0;clearPendingFiles();renderConversations();renderChat(true)}catch(e){state.messages=[];state.messagePaging={hasMore:false,oldestAt:null,loading:false};state.currentLock=null;renderChat(true);toast(e.message||'Não foi possível carregar a conversa.',true)}
+}
+async function loadOlderMessages(){if(!state.current||!state.messagePaging.hasMore||state.messagePaging.loading)return;state.messagePaging.loading=true;const box=$('#messages'),oldHeight=box?.scrollHeight||0,oldTop=box?.scrollTop||0;const btn=$('#loadOlderMessages');if(btn)btn.disabled=true;try{const d=await api(`/api/conversations/${state.current.id}/messages?paged=1&limit=120&before=${encodeURIComponent(state.messagePaging.oldestAt||0)}`);const existing=new Set(state.messages.map(m=>m.id));state.messages=[...(d.messages||[]).filter(m=>!existing.has(m.id)),...state.messages];state.messagePaging={hasMore:!!d.hasMore,oldestAt:d.oldestAt||state.messagePaging.oldestAt,loading:false};renderChat(false);requestAnimationFrame(()=>{if(box)box.scrollTop=(box.scrollHeight-oldHeight)+oldTop})}catch(e){state.messagePaging.loading=false;toast(e.message,true)}}
+function mediaKey(el){try{return new URL(el.currentSrc||el.src,location.href).pathname}catch{return el.currentSrc||el.src||''}}
+function captureMediaPlayback(box){return [...(box?.querySelectorAll?.('audio,video')||[])].map(el=>({key:mediaKey(el),time:Number(el.currentTime||0),paused:el.paused,volume:el.volume,muted:el.muted,rate:el.playbackRate})).filter(x=>x.key&&(x.time>0||!x.paused))}
+function restoreMediaPlayback(box,snapshots=[]){if(!box||!snapshots.length)return;for(const snap of snapshots){const el=[...box.querySelectorAll('audio,video')].find(m=>mediaKey(m)===snap.key);if(!el)continue;const restore=()=>{try{if(Number.isFinite(snap.time)&&snap.time>0&&Math.abs((el.currentTime||0)-snap.time)>.35)el.currentTime=snap.time;el.volume=snap.volume;el.muted=snap.muted;el.playbackRate=snap.rate||1;if(!snap.paused)el.play().catch(()=>{})}catch{}};if(el.readyState>=1)restore();else el.addEventListener('loadedmetadata',restore,{once:true})}}
+function mediaHtml(x){if(!x.file){if(x.meta?.mediaPending)return '<div class="media-pending">⏳ Mídia recebida — carregando…</div>';if(x.meta?.mediaError)return `<div class="sticker-unavailable">${esc(x.meta.mediaError)}</div>`;return x.type==='STICKER'?'<div class="sticker-unavailable">Figurinha indisponível</div>':'';}const src=esc(x.file.path),mt=x.file.mimetype||'';if(x.type==='STICKER'){const animated=Boolean(x.file.isAnimated),classes=`sticker-preview${animated?' animated-sticker':''}`,stickerSrc=`${src}${src.includes('?')?'&':'?'}v=${encodeURIComponent(x.id||x.externalId||x.file.size||'1')}`;return`<a class="sticker-link" href="${src}" target="_blank" title="${x.file.thumbnailOnly?'Prévia da figurinha':animated?'Figurinha animada — abrir arquivo':'Abrir figurinha'}"><img class="${classes}" src="${stickerSrc}" alt="Figurinha${animated?' animada':''}" loading="eager" decoding="async"></a>${x.file.thumbnailOnly?'<div class="small muted">Prévia estática — o WhatsApp não liberou o arquivo completo</div>':animated?'<div class="sticker-animated-badge">Animada</div>':''}`};if(mt.startsWith('image/'))return`<a href="${src}" target="_blank"><img class="media-preview" src="${src}"></a>`;if(mt.startsWith('video/'))return`<video class="media-preview" controls preload="metadata" src="${src}"></video>`;if(mt.startsWith('audio/'))return`<audio class="audio-preview" controls preload="metadata" src="${src}"></audio>`;return`<a class="filebox" href="${src}" target="_blank">▧ ${esc(x.file.name)}<div class="small muted">${esc(mt||'arquivo')} • ${Math.round((x.file.size||0)/1024)} KB</div></a>`}
+function whatsappInlineHtml(value=''){
+  let text=esc(String(value||''));
+  const code=[],links=[];
+  // Placeholders deliberately contain no *, _, ~ or ` so WhatsApp formatting cannot alter them.
+  const codeToken=i=>`§§BCCODE${i}§§`,linkToken=i=>`§§BCLINK${i}§§`;
+  text=text.replace(/```([\s\S]*?)```/g,(_,v)=>codeToken(code.push(`<code class="wa-mono-block">${v}</code>`)-1));
+  text=text.replace(/`([^`\n]+)`/g,(_,v)=>codeToken(code.push(`<code class="wa-inline-code">${v}</code>`)-1));
+  // URLs completas, www e domínios escritos sem protocolo (ex.: portal.exemplo.com.br/caminho).
+  text=text.replace(/(?:\bhttps?:\/\/[^\s<>]+|\bwww\.[^\s<>]+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s<>]*)?)/gi,m=>{
+    let url=m,tail='';
+    while(url&&/[.,!?;:)\]}>]$/.test(url)){tail=url.slice(-1)+tail;url=url.slice(0,-1)}
+    if(!url)return m;
+    const href=/^https?:\/\//i.test(url)?url:`https://${url}`;
+    const i=links.push(`<a class="wa-link" href="${href}" target="_blank" rel="noopener noreferrer" title="Abrir link">${url}</a>`)-1;
+    return `${linkToken(i)}${tail}`;
+  });
+  text=text.replace(/(^|[^\\])\*([^*\n]+)\*/g,'$1<strong>$2</strong>');
+  text=text.replace(/(^|[^\\])_([^_\n]+)_/g,'$1<em>$2</em>');
+  text=text.replace(/(^|[^\\])~([^~\n]+)~/g,'$1<del>$2</del>');
+  text=text.replace(/\\([*_~`])/g,'$1');
+  text=text.replace(/§§BCLINK(\d+)§§/g,(_,i)=>links[Number(i)]||'');
+  text=text.replace(/§§BCCODE(\d+)§§/g,(_,i)=>code[Number(i)]||'');
+  return text;
+}
+function whatsappFormatHtml(value=''){
+  const lines=String(value||'').replace(/\r\n/g,'\n').split('\n');
+  return lines.map(line=>{
+    if(/^>\s?/.test(line))return `<div class="wa-quote">${whatsappInlineHtml(line.replace(/^>\s?/,''))}</div>`;
+    if(/^[-*]\s+/.test(line))return `<div class="wa-list-line"><span>•</span><div>${whatsappInlineHtml(line.replace(/^[-*]\s+/,''))}</div></div>`;
+    const n=/^(\d+)\.\s+/.exec(line);if(n)return `<div class="wa-list-line"><span>${n[1]}.</span><div>${whatsappInlineHtml(line.slice(n[0].length))}</div></div>`;
+    return `<div class="wa-text-line">${whatsappInlineHtml(line)||'&nbsp;'}</div>`;
+  }).join('');
+}
+function pollMessageHtml(x){
+  const meta=x.meta||{},name=String(meta.name||String(x.body||'').split('\n')[0]||'Enquete'),fromMeta=Array.isArray(meta.options)?meta.options:[],fromBody=String(x.body||'').split('\n').slice(1).map(v=>v.replace(/^\s*[•*-]\s*/, '').trim()).filter(Boolean),options=(fromMeta.length?fromMeta:fromBody).slice(0,12),results=Array.isArray(meta.pollResults)?meta.pollResults:[];
+  const resultMap=new Map(results.map(r=>[String(r.name||r.option||''),Number(r.count??(Array.isArray(r.voters)?r.voters.length:0))]));
+  const total=[...resultMap.values()].reduce((a,b)=>a+b,0);
+  return `<div class="poll-card"><div class="poll-title"><span class="poll-icon">▣</span><div><b>${esc(name)}</b><span>Enquete do WhatsApp${meta.selectableCount>1?' • múltipla escolha':''}</span></div></div><div class="poll-options">${options.map(o=>{const count=resultMap.get(String(o))||0,pct=total?Math.round(count*100/total):0;return `<div class="poll-option"><span class="poll-radio"></span><div class="poll-option-content"><span>${esc(o)}</span>${total?`<div class="poll-result-bar"><i style="width:${pct}%"></i></div>`:''}</div>${total?`<small>${count}</small>`:''}</div>`}).join('')||'<div class="small muted">Opções da enquete indisponíveis.</div>'}</div>${total?`<div class="poll-footer">${total} voto${total===1?'':'s'} registrado${total===1?'':'s'}</div>`:'<div class="poll-footer">A votação é feita pelo WhatsApp</div>'}</div>`;
+}
+function messageTextHtml(x){if(isPhantomMessage(x))return'';if(x.file&&String(x.body||'')===String(x.file.name||''))return'';if(x.type==='STICKER'&&/^sticker-/i.test(String(x.body||'')))return'';if(x.type==='POLL')return pollMessageHtml(x);const body=String(x.body||'').replace(/\r\n/g,'\n');return `<div class="message-body ${x.type==='LIST'?'list-body':''}">${whatsappFormatHtml(body)}</div>`}
+function statusIcon(x){if(x.direction!=='OUT')return'';return x.status==='READ'?'✓✓':x.status==='DELIVERED'?'✓✓':x.status==='QUEUED'?'⏳':x.status==='FAILED'?'⚠':'✓'}
+function statusLabel(x){if(x.status==='SIMULATED')return'Simulada (teste)';if(x.status==='NOT_SENT')return'Não enviada';if(x.status==='READ')return'Lida';if(x.status==='DELIVERED')return'Entregue';if(x.status==='QUEUED')return'Na fila';if(x.status==='FAILED')return'Falha';return'Enviada'}
+function readFlowHtml(x){if(x.direction!=='OUT')return'';const steps=[];if(x.sentAt)steps.push(`Enviada ${fmtDate(x.sentAt)}`);if(x.deliveredAt)steps.push(`Entregue ${fmtDate(x.deliveredAt)}`);if(x.readAt)steps.push(`Lida ${fmtDate(x.readAt)}`);return steps.length?`<div class="read-flow">${steps.join(' • ')}</div>`:''}
+function applyConversationLockUI(){
+  const locked=!state.current?.isGroup&&state.currentLock&&!state.currentLock.isMine&&Number(state.currentLock.expiresAt||0)>Date.now();
+  const unclaimed=state.current&&!state.current.isGroup&&!state.current.ownerId&&['OPEN','WAITING'].includes(state.current.status);
+  const finalized=!!state.current&&['CLOSED','HISTORY'].includes(state.current.status);
+  const blocked=locked||unclaimed||finalized;
+  const controlIds=['composer','sendBtn','attachBtn','recordBtn','quickBtn','aiBtn','noteBtn','messageModeBtn','formatBold','formatItalic','formatStrike','formatMono','fileInput'];
+  for(const id of controlIds){const el=$('#'+id);if(el)el.disabled=!!blocked}
+  const composer=$('#composer'),composerBox=document.querySelector('.composer'),hint=$('#composerStateHint');
+  composerBox?.classList.toggle('is-blocked',blocked);
+  composerBox?.classList.toggle('is-finalized',finalized);
+  if(finalized){
+    if(composer){composer.value='';composer.placeholder=state.current?.status==='HISTORY'?'Histórico somente leitura':'Atendimento finalizado — reabra para responder'}
+    state.replyTo=null;clearPendingFiles();closeQuickSlashPopover();renderReplyStrip();
+    if(hint){hint.textContent=state.current?.status==='HISTORY'?'Esta conversa está em modo histórico. Abra um novo atendimento para responder.':'Este atendimento está finalizado. Clique em Reabrir para voltar a responder.';hint.classList.add('show')}
+  }else if(unclaimed){
+    if(composer)composer.placeholder='Assuma este atendimento para responder';
+    if(hint){hint.textContent='Este atendimento está na fila. Assuma para começar a responder.';hint.classList.add('show')}
+  }else if(locked){
+    if(composer)composer.placeholder='Resposta temporariamente bloqueada';
+    if(hint){hint.textContent=`Em atendimento por ${state.currentLock.userName}. A transferência libera o atendimento imediatamente para o novo responsável.`;hint.classList.add('show')}
+  }else{
+    if(composer)composer.placeholder='Digite sua mensagem...';
+    if(hint){hint.textContent='';hint.classList.remove('show')}
+  }
+  return blocked
+}
+let chatFollowBottom=true,chatForceBottomUntil=0;
+function messagesNearBottom(box=$('#messages'),threshold=110){if(!box)return true;return (box.scrollHeight-box.scrollTop-box.clientHeight)<=threshold}
+function scheduleMessagesBottom(settle=false){
+  const box=$('#messages');if(!box)return;
+  const go=()=>{box.scrollTop=box.scrollHeight};
+  go();requestAnimationFrame(()=>{go();requestAnimationFrame(go)});
+  if(!settle)return;
+  const shouldFollow=()=>chatFollowBottom||Date.now()<=chatForceBottomUntil;
+  for(const delay of [40,100,180,320,550,900,1400])setTimeout(()=>{if(shouldFollow())go()},delay);
+  box.querySelectorAll('img').forEach(el=>{if(!el.complete)el.addEventListener('load',()=>{if(shouldFollow())go()},{once:true})});
+  box.querySelectorAll('video,audio').forEach(el=>{if(Number(el.readyState||0)<1)el.addEventListener('loadedmetadata',()=>{if(shouldFollow())go()},{once:true})});
+}
+function prepareConversationBottom(){chatFollowBottom=true;chatForceBottomUntil=Date.now()+1800}
+function bindMessageAutoScroll(){
+  const box=$('#messages');if(!box||box.dataset.autoScrollBound==='1')return;box.dataset.autoScrollBound='1';
+  const userMove=()=>{if(!messagesNearBottom(box,55)){chatFollowBottom=false;chatForceBottomUntil=0}};
+  box.addEventListener('wheel',userMove,{passive:true});box.addEventListener('touchstart',userMove,{passive:true});
+  box.addEventListener('scroll',()=>{if(messagesNearBottom(box,70))chatFollowBottom=true},{passive:true});
+}
+function quotedPreviewHtml(x){
+  const q=x?.quoted;if(!q)return'';const label=String(q.senderName||'Mensagem citada'),body=String(q.body||ptLabel(q.type)||'Mensagem'),kind=q.type&&q.type!=='TEXT'?` • ${ptLabel(q.type)}`:'';
+  return `<button type="button" class="quoted quoted-jump" data-quote-id="${esc(q.id||'')}" data-quote-external="${esc(q.externalId||'')}" title="Ir para a mensagem original"><span class="quoted-sender">${esc(label)}${esc(kind)}</span><span class="quoted-body">${esc(body).slice(0,180)}</span></button>`;
+}
+function editedLabelHtml(x){if(!x?.editedAt&&!x?.meta?.edited)return'';const count=Array.isArray(x.editHistory)?x.editHistory.length:0;return `<button type="button" class="edited-label" data-edit-history="${esc(x.id||'')}" title="${count?'Ver histórico de edições':'Mensagem editada'}">editada</button>`}
+function flashQuotedTarget(el){if(!el)return;el.classList.remove('quoted-target-flash');void el.offsetWidth;el.classList.add('quoted-target-flash');setTimeout(()=>el.classList.remove('quoted-target-flash'),1600)}
+async function jumpToQuoted(button){
+  const id=button?.dataset?.quoteId||'',external=button?.dataset?.quoteExternal||'';let target=state.messages.find(m=>(id&&m.id===id)||(external&&m.externalId===external));
+  for(let page=0;!target&&state.messagePaging?.hasMore&&page<10;page++){await loadOlderMessages();target=state.messages.find(m=>(id&&m.id===id)||(external&&m.externalId===external))}
+  if(!target)return toast('A mensagem original não está disponível no histórico carregado.',true);
+  const el=document.querySelector(`.msg[data-mid="${CSS.escape(target.id)}"]`);if(el){chatFollowBottom=false;chatForceBottomUntil=0;el.scrollIntoView({behavior:'smooth',block:'center'});flashQuotedTarget(el)}
+}
+function contactSummaryItems(c=state.current){
+  const ct=c?.contact||{};if(!c||c.isGroup||c.isChannel)return[];
+  const cls=classificationLabel(ct),campus=ct.campus||ct.triageData?.polo||'',stage=ptLabel(ct.stage||''),origin=ct.source||ct.triageData?.origem||ct.serviceTopic||'WhatsApp';
+  const items=[
+    ['☎',fmtPhone(ct.phone||''),'Telefone'],
+    ['◈',cls,'Classificação'],
+    ['⌂',campus,'Polo'],
+    ['▤',stage,'Etapa'],
+    ['◎',origin,'Origem']
+  ];
+  return items.filter(([,value])=>{const v=String(value||'').trim();return v&&v!=='—'&&v!=='-'});
+}
+function renderContactSummaryStrip(){
+  const box=$('#contactSummaryStrip');if(!box)return;const items=contactSummaryItems();
+  if(!items.length){box.innerHTML='';box.classList.add('hidden');return}
+  box.innerHTML=items.map(([icon,value,label])=>`<div class="contact-summary-item" title="${esc(label)}: ${esc(value)}"><span class="summary-icon">${icon}</span><b>${esc(value)}</b></div>`).join('');
+  box.classList.remove('hidden');
+}
+function closeChatMoreMenu(){const menu=$('#chatMoreMenu');if(menu)menu.classList.add('hidden')}
+function toggleChatMoreMenu(e){e?.stopPropagation?.();if(!state.current)return;const menu=$('#chatMoreMenu');if(menu)menu.classList.toggle('hidden')}
+function syncMoreActionsMenu(){
+  const c=state.current,menu=$('#chatMoreMenu');if(!menu)return;
+  const q=menu.querySelector('[data-more-action="queue"]'),st=menu.querySelector('[data-more-action="status"]'),d=menu.querySelector('[data-more-action="delete"]');
+  if(q)q.classList.toggle('hidden',!c||c.isGroup||c.isChannel||!c.ownerId||!['OPEN','WAITING','WAITING_CUSTOMER','WAITING_INTERNAL'].includes(c.status));
+  if(st)st.classList.toggle('hidden',!c||c.isGroup||c.isChannel||!c.ownerId||['CLOSED','HISTORY'].includes(c.status));
+  if(d)d.classList.toggle('hidden',state.me?.role!=='SUPER_ADMIN'||!c);
+}
+
+function renderChat(scrollBottom=true){
+  closeReactionPicker();
+  const c=state.current;if(!c){renderEmptyConversation();return}document.querySelector('.chat')?.classList.add('has-conversation');
+  $('#chatName').textContent=c.contact?.name||c.contact?.phone;setAvatar($('#chatAvatar'),c);
+  const queue=conversationQueue(c),conn=connectionForConversation(c);$('#chatMeta').textContent=`${c.protocol?`${c.protocol} • `:''}${c.isGroup?'Grupo WhatsApp • ':''}${c.owner?.name?`Responsável: ${c.owner.name}`:''}${c.priority==='HIGH'?' • PRIORIDADE':''}`;if($('#chatConnectionInfo')){const n=connectionDisplayName(conn),p=formatConnectionPhone(connectionDisplayPhone(conn));$('#chatConnectionInfo').innerHTML=conn?`<span>WhatsApp:</span> <b>${esc(n)}</b>${p?`<span class="connection-phone">${esc(p)}</span>`:''}`:'';$('#chatConnectionInfo').classList.toggle('hidden',!conn)}if($('#composerConnectionInfo')){const n=connectionDisplayName(conn),p=formatConnectionPhone(connectionDisplayPhone(conn));$('#composerConnectionInfo').innerHTML=conn?`<span>Respondendo por:</span> <b>${esc(n)}</b>${p?`<span>${esc(p)}</span>`:''}`:'';$('#composerConnectionInfo').classList.toggle('hidden',!conn)};if($('#chatQueueBadge')){$('#chatQueueBadge').textContent=queue?.name?`Fila • ${queue.name}`:'Fila • Sem fila';$('#chatQueueBadge').className=`chat-queue-pill ${queueTone(c)}`};const statusLabels={OPEN:'Em atendimento',WAITING:'Na fila',WAITING_CUSTOMER:'Aguardando cliente',WAITING_INTERNAL:'Aguardando setor interno',HISTORY:'Histórico',CLOSED:'Finalizado'},attendanceStatusLabel=statusLabels[c.status]||c.status||'—';if($('#chatStateBadge')){$('#chatStateBadge').textContent=attendanceStatusLabel;$('#chatStateBadge').className=`chat-status-pill hidden ${String(c.status||'').toLowerCase()}`};if($('#statusBtn'))$('#statusBtn').textContent=`● ${attendanceStatusLabel}`;
+  $('#closeBtn').textContent=c.status==='CLOSED'?'Reabrir':c.status==='HISTORY'?'Abrir atendimento':'Finalizar';$('#closeBtn')?.classList.remove('hidden');$('#moreActionsBtn')?.classList.remove('hidden');const claimable=!c.isGroup&&!c.ownerId&&['OPEN','WAITING'].includes(c.status)&&!c.isChannel&&c.triageStatus!=='AWAITING_CHOICE';$('#claimBtn')?.classList.toggle('hidden',!claimable);for(const id of ['aiSummary','returnQueueBtn','searchConversationBtn','expandChatBtn','detailsBtn','deleteConversationBtn'])$('#'+id)?.classList.add('hidden');if($('#statusBtn'))$('#statusBtn').classList.toggle('hidden',c.isGroup||c.isChannel||c.status==='CLOSED'||c.status==='HISTORY'||!c.ownerId);if($('#transferBtn'))$('#transferBtn').classList.toggle('hidden',!c||c.isChannel);if($('#pendBtn'))$('#pendBtn').classList.toggle('hidden',!c||c.isChannel||c.isGroup);if($('#claimBtn'))$('#claimBtn').textContent=c.isGroup?'✓ Assumir grupo':'✓ Assumir atendimento';const box=$('#messages'),mediaPlayback=captureMediaPlayback(box);const items=[...state.messages].filter(x=>!isPhantomMessage(x)).sort((a,b)=>(a.createdAt-b.createdAt)||String(a.id).localeCompare(String(b.id)));let lastDay='';
+  const older=state.messagePaging?.hasMore?'<div class="load-older-wrap"><button class="btn small" id="loadOlderMessages">Carregar mensagens anteriores</button></div>':'';
+  const queueBanner=!c.ownerId&&['OPEN','WAITING'].includes(c.status)?(c.triageStatus==='AWAITING_CHOICE'?`<div class="queue-banner"><div><b>Triagem automática em andamento</b><span>O Balbino Chat está aguardando o contato escolher o setor antes de liberar o atendimento para a fila responsável.</span></div><span class="triage-pill">Aguardando escolha</span></div>`:`<div class="queue-banner"><div><b>Atendimento disponível • ${c.department?.name?`Fila: ${esc(c.department.name)}`:'Sem fila'}</b><span>Visível para os atendentes autorizados desta fila até alguém assumir.</span></div><button class="btn claim-inline" id="claimInlineBtn">Assumir agora</button></div>`):'';const lock=state.currentLock&&!state.currentLock.isMine&&Number(state.currentLock.expiresAt||0)>Date.now()?`<div class="lock-banner">🔒 Atendimento em uso por <b>${esc(state.currentLock.userName)}</b>. O envio fica bloqueado para evitar respostas simultâneas.</div>`:'';
+  box.innerHTML=queueBanner+lock+(older?older:histPrevHtml(c))+items.filter(x=>x?.type!=='POLL_UPDATE').map(x=>{const day=new Date(x.createdAt).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'});const sep=day!==lastDay?`<div class="day-sep">${day}</div>`:'';lastDay=day;const sender=c.isGroup&&x.direction==='IN'&&x.senderName?`<div class="group-sender">${esc(x.senderName)}</div>`:'';return sep+`<div class="msg ${x.direction==='OUT'?'out':x.direction==='NOTE'?'note':''}" data-mid="${x.id}">${sender}${quotedPreviewHtml(x)}${x.type==='CONTACT'?contactCardHtml(x):messageTextHtml(x)}${mediaHtml(x)}${x.meta?.latitude!=null?`<div class="filebox">📍 Localização: ${esc(x.meta.name||'')} ${x.meta.latitude}, ${x.meta.longitude}</div>`:''}${(x.reactions||[]).length?`<div class="small">${x.reactions.map(r=>r.emoji).join(' ')}</div>`:''}<div class="meta">${x.favorite?'⭐ ':''}${editedLabelHtml(x)}${x.direction==='OUT'?`<span class="status-tag ${String(x.status||'').toLowerCase()}">${statusIcon(x)} ${statusLabel(x)}</span> `:''}${fmtDate(x.createdAt)}</div>${readFlowHtml(x)}${x.direction!=='NOTE'?`<div class="msg-actions"><button data-act="reply" data-id="${x.id}">↩ Responder</button><button data-act="copy" data-id="${x.id}">Copiar</button>${x.direction==='OUT'&&x.type==='TEXT'&&x.externalId?`<button data-act="edit" data-id="${x.id}">Editar</button>`:''}<button data-act="star" data-id="${x.id}">${x.favorite?'★':'☆'}</button>${x.externalId?`<button data-act="react" data-id="${x.id}" title="Reagir">☺</button>`:''}</div>`:''}</div>`}).join('');
+  applyConversationLockUI();restoreMediaPlayback(box,mediaPlayback);histPrevContar(c);if(scrollBottom){chatFollowBottom=true;scheduleMessagesBottom(true)}$('#loadOlderMessages')?.addEventListener('click',loadOlderMessages);$('#claimInlineBtn')?.addEventListener('click',claimConversation);$$('[data-act]').forEach(b=>b.onclick=()=>messageAction(b.dataset.act,b.dataset.id,b));$$('.quoted-jump').forEach(b=>b.onclick=()=>jumpToQuoted(b));$$('[data-edit-history]').forEach(b=>b.onclick=()=>showEditHistory(b.dataset.editHistory));renderContactSide();fichaContato();renderContactSummaryStrip();syncMoreActionsMenu();updateTypingIndicator()
+}
+function renderContactSide(){
+  const c=state.current,ct=c?.contact||{};if(!c)return;
+  if(c.isGroup){const g=c.group||{};$('#contactSide').innerHTML=`<button class="btn small details-close" data-close-details style="margin-bottom:8px">← Voltar à conversa</button><div class="profile"><div class="avatar">${avatarMarkup(c)}</div><h3>${esc(ct.name||g.subject||'Grupo WhatsApp')}</h3><div class="muted small">${Number(g.size||0)} participantes</div></div><div class="info-row"><b>Acesso</b>Grupo compartilhado entre usuários autorizados</div><div class="info-row"><b>Fila / setor</b>${esc(c.department?.name||'—')}</div><div class="info-row"><b>Descrição</b>${esc(g.desc||'—')}</div><div class="info-row"><b>Administradores</b>${Number((g.participants||[]).filter(p=>p.admin).length||0)}</div><div class="info-row"><b>JID do grupo</b><span class="small muted">${esc(g.jid||ct.whatsappJid||'—')}</span></div><div class="info-row"><b>Prioridade</b><select class="input" id="sidePriority"><option>NORMAL</option><option ${c.priority==='HIGH'?'selected':''}>HIGH</option><option ${c.priority==='LOW'?'selected':''}>LOW</option></select></div>`;$('#sidePriority').onchange=async e=>{await api(`/api/conversations/${c.id}/transfer`,{method:'POST',body:{departmentId:c.departmentId,ownerId:c.ownerId,priority:e.target.value}});c.priority=e.target.value;toast('Prioridade alterada')};$('[data-close-details]')?.addEventListener('click',closeDetails);return}
+  $('#contactSide').innerHTML=`<button class="btn small details-close" data-close-details style="margin-bottom:8px">← Voltar à conversa</button><div class="profile"><div class="avatar">${avatarMarkup(c)}</div><h3>${esc(ct.name||ct.phone)}</h3><div class="muted small">${fmtPhone(ct.phone)}</div></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:7px"><button class="btn small" id="sideEdit">Editar contato</button><button class="btn small" id="sideContactHistory">Histórico</button></div><button class="btn small" id="sideAssignmentHistory" style="width:100%;margin-bottom:6px">Histórico de responsáveis</button><div class="info-row"><b>Acesso</b>Grupo compartilhado entre usuários autorizados</div><div class="info-row"><b>Fila / setor</b>${esc(c.department?.name||'—')}</div><div class="info-row"><b>Etapa</b>${esc(ct.stage||'—')}</div><div class="info-row"><b>Prioridade</b><select class="input" id="sidePriority"><option>NORMAL</option><option ${c.priority==='HIGH'?'selected':''}>HIGH</option><option ${c.priority==='LOW'?'selected':''}>LOW</option></select></div><div class="info-row"><b>Tags</b><div class="tags">${(ct.tags||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join('')||'<span class="muted">Sem tags</span>'}</div></div><div class="info-row"><b>Origem</b>${esc(ct.source||'—')}</div><div class="info-row"><b>Observações</b>${esc(ct.notes||'—')}</div>${c.csat?`<div class="info-row"><b>Avaliação</b>${'★'.repeat(c.csat)} (${c.csat}/5)</div>`:''}`;$('#sideEdit').onclick=()=>editContact(ct.id,true);if($('#sideContactHistory'))$('#sideContactHistory').onclick=()=>showContactHistory(ct.id);if($('#sideAssignmentHistory'))$('#sideAssignmentHistory').onclick=showAssignmentHistory;$('#sidePriority').onchange=async e=>{await api(`/api/conversations/${c.id}/transfer`,{method:'POST',body:{departmentId:c.departmentId,ownerId:c.ownerId,priority:e.target.value}});c.priority=e.target.value;toast('Prioridade alterada')};$('[data-close-details]')?.addEventListener('click',closeDetails)
+}
+const QUICK_REACTIONS=['👍','❤️','😂','😮','😢','🙏'];
+const MORE_REACTIONS=['👏','🔥','🎉','😍','🤔','😡','✅','❌','💯','🙌','🤝','👀','💙','💚','💛','💜','🤍','🫶','😅','🤣','🥰','🤩','😎','🥳','😴','🤯','🤗','👌','✌️','🤞'];
+let reactionPickerEl=null,reactionPickerCloseHandler=null;
+function closeReactionPicker(){if(reactionPickerEl){reactionPickerEl.remove();reactionPickerEl=null}if(reactionPickerCloseHandler){document.removeEventListener('pointerdown',reactionPickerCloseHandler,true);reactionPickerCloseHandler=null}}
+function ownReactionFor(messageItem){return (messageItem?.reactions||[]).find(r=>String(r.from||'')===String(state.me?.id||''))?.emoji||''}
+async function applyReaction(messageId,emoji){const messageItem=state.messages.find(x=>x.id===messageId);if(!messageItem)return;try{const current=ownReactionFor(messageItem),next=current===emoji?'':emoji;const x=await api(`/api/messages/${messageId}/reaction`,{method:'POST',body:{emoji:next}});Object.assign(messageItem,x);closeReactionPicker();renderChat(false);toast(next?`Reação ${next} enviada`:'Reação removida')}catch(e){toast(e.message,true)}}
+function positionReactionPicker(picker,anchor){const r=anchor.getBoundingClientRect(),pr=picker.getBoundingClientRect();let left=r.left+r.width/2-pr.width/2,top=r.top-pr.height-8;left=Math.max(8,Math.min(left,window.innerWidth-pr.width-8));if(top<8)top=Math.min(window.innerHeight-pr.height-8,r.bottom+8);picker.style.left=`${Math.round(left)}px`;picker.style.top=`${Math.round(top)}px`}
+function openReactionPicker(anchor,messageId){closeReactionPicker();const messageItem=state.messages.find(x=>x.id===messageId);if(!messageItem)return;const current=ownReactionFor(messageItem),picker=document.createElement('div');picker.className='reaction-picker';picker.setAttribute('role','dialog');picker.setAttribute('aria-label','Escolher reação');const quick=document.createElement('div');quick.className='reaction-quick-row';for(const emoji of QUICK_REACTIONS){const b=document.createElement('button');b.type='button';b.className='reaction-option'+(emoji===current?' selected':'');b.textContent=emoji;b.title=`Reagir com ${emoji}`;b.addEventListener('click',()=>applyReaction(messageId,emoji));quick.appendChild(b)}const more=document.createElement('button');more.type='button';more.className='reaction-option reaction-more';more.textContent='＋';more.title='Mais reações';quick.appendChild(more);if(current){const remove=document.createElement('button');remove.type='button';remove.className='reaction-remove';remove.textContent='×';remove.title='Remover reação';remove.addEventListener('click',()=>applyReaction(messageId,''));quick.appendChild(remove)}picker.appendChild(quick);const grid=document.createElement('div');grid.className='reaction-more-grid hidden';for(const emoji of MORE_REACTIONS){const b=document.createElement('button');b.type='button';b.className='reaction-option'+(emoji===current?' selected':'');b.textContent=emoji;b.title=`Reagir com ${emoji}`;b.addEventListener('click',()=>applyReaction(messageId,emoji));grid.appendChild(b)}picker.appendChild(grid);more.addEventListener('click',()=>{grid.classList.toggle('hidden');requestAnimationFrame(()=>positionReactionPicker(picker,anchor))});document.body.appendChild(picker);reactionPickerEl=picker;positionReactionPicker(picker,anchor);setTimeout(()=>{reactionPickerCloseHandler=e=>{if(!picker.contains(e.target)&&e.target!==anchor)closeReactionPicker()};document.addEventListener('pointerdown',reactionPickerCloseHandler,true)},0)}
+function showEditHistory(id){const m=state.messages.find(x=>x.id===id);if(!m)return;const rows=Array.isArray(m.editHistory)?m.editHistory:[];const current=`<div class="edit-history-current"><b>Texto atual</b><div>${whatsappFormatHtml(String(m.body||''))}</div>${m.editedAt?`<span class="small muted">Editada em ${fmtDate(m.editedAt)}</span>`:''}</div>`;const history=rows.length?rows.slice().reverse().map((h,i)=>`<div class="edit-history-row"><b>Versão anterior ${rows.length-i}</b><div>${whatsappFormatHtml(String(h.body||''))}</div><span class="small muted">${h.editorName?`${esc(h.editorName)} • `:''}${fmtDate(h.at||m.editedAt||m.createdAt)}</span></div>`).join(''):'<div class="small muted">O WhatsApp informou que esta mensagem foi editada, mas não há versão anterior armazenada.</div>';showModal('Histórico de edições',current+history)}
+async function editMessageModal(messageItem){if(!state.current||!messageItem)return;showModal('Editar mensagem',`<div class="small muted" style="margin-bottom:8px">A alteração também será enviada ao WhatsApp.</div><textarea class="input" id="editMessageText" style="min-height:130px">${esc(messageItem.body||'')}</textarea><button class="btn primary" id="editMessageSave" style="margin-top:10px">Salvar edição</button>`);const input=$('#editMessageText');input.focus();input.setSelectionRange(input.value.length,input.value.length);$('#editMessageSave').onclick=async()=>{const text=input.value.trim();if(!text)return toast('A mensagem editada não pode ficar vazia.',true);try{const d=await api(`/api/conversations/${state.current.id}/messages/${messageItem.id}/edit`,{method:'POST',body:{body:text}});if(d.message)Object.assign(messageItem,d.message);hideModal();renderChat(false);scheduleConversationRefresh(180);toast(d.unchanged?'Nenhuma alteração feita.':'Mensagem editada no WhatsApp.')}catch(e){toast(e.message,true)}}}
+async function messageAction(act,id,buttonEl=null){const messageItem=state.messages.find(x=>x.id===id);if(!messageItem)return;if(act==='reply'){state.replyTo=messageItem;renderReplyStrip();$('#composer').focus()}if(act==='copy'){await navigator.clipboard.writeText(messageItem.body||'');toast('Mensagem copiada')}if(act==='edit'){await editMessageModal(messageItem)}if(act==='star'){const x=await api(`/api/messages/${id}/favorite`,{method:'POST',body:{favorite:!messageItem.favorite}});Object.assign(messageItem,x);renderChat(false)}if(act==='react'){const anchor=buttonEl||document.querySelector(`[data-act="react"][data-id="${CSS.escape(id)}"]`);if(anchor)openReactionPicker(anchor,id)}}
+window.addEventListener('resize',closeReactionPicker);document.addEventListener('scroll',()=>{if(reactionPickerEl)closeReactionPicker()},true);document.addEventListener('keydown',e=>{if(e.key==='Escape'&&reactionPickerEl)closeReactionPicker()});
+function resizeComposer(){const el=$('#composer');if(!el)return;el.style.height='auto';el.style.height=Math.min(112,Math.max(48,el.scrollHeight))+'px'}
+function renderReplyStrip(){const s=$('#replyStrip');if(state.replyTo){s.classList.add('show');const who=state.replyTo.senderName||(state.replyTo.direction==='OUT'?'Você':state.current?.contact?.name)||'Mensagem';$('#replyText').textContent=`Respondendo a ${who}: ${state.replyTo.body?.slice(0,100)||ptLabel(state.replyTo.type)}`}else s.classList.remove('show')}
+function humanFileSize(bytes){const n=Number(bytes||0);if(n<1024)return`${n} B`;if(n<1024*1024)return`${(n/1024).toFixed(n<10240?1:0)} KB`;return`${(n/1024/1024).toFixed(1)} MB`}
+function clearPendingFiles(){for(const item of state.pendingFiles||[]){if(item.url)URL.revokeObjectURL(item.url)}state.pendingFiles=[];renderPendingFiles()}
+function removePendingFile(id){const idx=(state.pendingFiles||[]).findIndex(x=>x.id===id);if(idx<0)return;const [item]=state.pendingFiles.splice(idx,1);if(item?.url)URL.revokeObjectURL(item.url);renderPendingFiles()}
+function normalizePendingFile(file,source='attach'){if(!file)return null;let f=file;if(source==='clipboard'&&(!f.name||/^image\.(png|jpe?g|webp)$/i.test(f.name))){const ext=(f.type.split('/')[1]||'png').replace('jpeg','jpg');f=new File([f],`imagem-colada-${Date.now()}.${ext}`,{type:f.type||'image/png',lastModified:Date.now()})}return{id:`pf-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,file:f,url:String(f.type||'').startsWith('image/')?URL.createObjectURL(f):null,source}}
+function addPendingFiles(files,source='attach'){const incoming=[...(files||[])].filter(Boolean);if(!incoming.length)return;const maxMB=Number(state.settings?.maxUploadMB||55),existing=(state.pendingFiles||[]).reduce((a,x)=>a+Number(x.file?.size||0),0),added=incoming.reduce((a,x)=>a+Number(x.size||0),0);if(existing+added>maxMB*1024*1024){toast(`Os anexos ultrapassam o limite de ${maxMB} MB.`,true);return}for(const file of incoming){const item=normalizePendingFile(file,source);if(item)state.pendingFiles.push(item)}renderPendingFiles();if(source==='clipboard')toast(incoming.length===1?'Imagem colada. Revise e clique em enviar.':`${incoming.length} imagens coladas. Revise e clique em enviar.`);else if(source==='drop')toast(incoming.length===1?'Arquivo anexado. Revise e clique em enviar.':`${incoming.length} arquivos anexados. Revise e clique em enviar.`)}
+function renderPendingFiles(){const box=$('#pendingFilesPreview');if(!box)return;const items=state.pendingFiles||[];box.classList.toggle('show',items.length>0);box.innerHTML=items.map(item=>{const f=item.file,thumb=item.url?`<img src="${item.url}" alt="Prévia">`:`<div class="pending-file-icon">▧</div>`;return`<div class="pending-file-card" data-pending-id="${item.id}">${thumb}<div class="pending-file-meta"><b>${esc(f.name||'Arquivo')}</b><span>${esc(f.type||'arquivo')} • ${humanFileSize(f.size)}</span></div><button type="button" class="pending-file-remove" data-remove-pending="${item.id}" title="Remover anexo">×</button></div>`}).join('');$$('[data-remove-pending]').forEach(b=>b.onclick=()=>removePendingFile(b.dataset.removePending))}
+function hasDraggedFiles(e){const dt=e?.dataTransfer;if(!dt)return false;const types=[...(dt.types||[])];if(types.includes('Files'))return true;return [...(dt.items||[])].some(item=>item.kind==='file')}
+function setChatDropState(active){const chat=document.querySelector('.chat'),overlay=$('#chatDropOverlay');if(chat)chat.classList.toggle('dropzone-active',!!active);if(overlay)overlay.classList.toggle('show',!!active)}
+function handleChatDragEnter(e){if(!hasDraggedFiles(e))return;e.preventDefault();chatDragDepth+=1;setChatDropState(true)}
+function handleChatDragOver(e){if(!hasDraggedFiles(e))return;e.preventDefault();if(e.dataTransfer)e.dataTransfer.dropEffect='copy';setChatDropState(true)}
+function handleChatDragLeave(e){if(!hasDraggedFiles(e))return;e.preventDefault();chatDragDepth=Math.max(0,chatDragDepth-1);if(chatDragDepth===0)setChatDropState(false)}
+function handleChatDrop(e){if(!hasDraggedFiles(e))return;e.preventDefault();chatDragDepth=0;setChatDropState(false);const files=[...(e.dataTransfer?.files||[])].filter(Boolean);if(!files.length)return;if(state.composeMode==='note')setComposerMode('message');addPendingFiles(files,'drop')}
+function bindChatDropzone(){const chat=document.querySelector('.chat');if(!chat||chat.dataset.dropBound==='1')return;chat.dataset.dropBound='1';chat.addEventListener('dragenter',handleChatDragEnter);chat.addEventListener('dragover',handleChatDragOver);chat.addEventListener('dragleave',handleChatDragLeave);chat.addEventListener('drop',handleChatDrop);document.addEventListener('dragend',()=>{chatDragDepth=0;setChatDropState(false)})}
+function clipboardImages(event){const items=[...(event.clipboardData?.items||[])],files=[];for(const item of items){if(item.kind==='file'&&String(item.type||'').startsWith('image/')){const file=item.getAsFile();if(file)files.push(file)}}return files}
+function handleComposerPaste(event){if(!state.current||$('#composer')?.disabled)return;const images=clipboardImages(event);if(!images.length)return;event.preventDefault();addPendingFiles(images,'clipboard');$('#composer')?.focus()}
+
+function applyComposerFormat(open,close=open){
+  const el=$('#composer');if(!el||el.disabled)return;const start=Number(el.selectionStart||0),end=Number(el.selectionEnd||0),value=el.value,selected=value.slice(start,end);el.value=value.slice(0,start)+open+selected+close+value.slice(end);const innerStart=start+open.length,innerEnd=innerStart+selected.length;el.focus();el.setSelectionRange(selected?innerEnd+close.length:innerStart,selected?innerEnd+close.length:innerStart);resizeComposer();el.dispatchEvent(new Event('input',{bubbles:true}));
+}
+function bindFormattingButtons(){
+  const map={formatBold:['*','*'],formatItalic:['_','_'],formatStrike:['~','~'],formatMono:['```','```']};for(const [id,[a,b]] of Object.entries(map)){const btn=$('#'+id);if(btn)btn.onclick=()=>applyComposerFormat(a,b)}
+}
+function composerFormatShortcut(e){if(!(e.ctrlKey||e.metaKey))return;const k=String(e.key||'').toLowerCase();if(k==='b'){e.preventDefault();applyComposerFormat('*','*')}else if(k==='i'){e.preventDefault();applyComposerFormat('_','_')}else if(k==='x'&&e.shiftKey){e.preventDefault();applyComposerFormat('~','~')}}
+async function pollModal(){
+  if(!state.current)return toast('Selecione uma conversa.',true);
+  if(String(state.current.provider||'').toUpperCase()==='CLOUD_API'||String(state.current.instance?.provider||'').toUpperCase()==='CLOUD_API')return toast('Enquete nativa está disponível nas conexões WhatsApp Web. Para API Oficial, use mensagens interativas/modelos.',true);
+  showModal('Nova enquete',`<label class="small muted">Pergunta</label><input class="input" id="pollQuestion" maxlength="255" placeholder="Digite a pergunta da enquete"><div class="poll-builder-head"><span class="small muted">Opções</span><button class="btn small" id="pollAddOption" type="button">+ Adicionar opção</button></div><div id="pollOptionList"><input class="input poll-option-input" placeholder="Opção 1"><input class="input poll-option-input" placeholder="Opção 2"></div><label class="poll-multiple-toggle"><input type="checkbox" id="pollMultiple"> Permitir selecionar mais de uma opção</label><button class="btn primary" id="pollSend" style="margin-top:12px">Enviar enquete</button>`);
+  const list=$('#pollOptionList');$('#pollAddOption').onclick=()=>{const count=list.querySelectorAll('.poll-option-input').length;if(count>=12)return toast('O WhatsApp permite no máximo 12 opções.',true);const input=document.createElement('input');input.className='input poll-option-input';input.placeholder=`Opção ${count+1}`;list.appendChild(input);input.focus()};
+  $('#pollSend').onclick=async()=>{const name=$('#pollQuestion').value.trim(),options=[...document.querySelectorAll('.poll-option-input')].map(i=>i.value.trim()).filter(Boolean),multiple=$('#pollMultiple').checked;if(!name)return toast('Digite a pergunta da enquete.',true);if(options.length<2)return toast('Informe pelo menos duas opções.',true);try{const d=await api(`/api/conversations/${state.current.id}/poll`,{method:'POST',body:{name,options,selectableCount:multiple?options.length:1}});if(d.message&&!state.messages.some(m=>m.id===d.message.id))state.messages.push(d.message);hideModal();renderChat();scheduleConversationRefresh(180);toast('Enquete enviada.')}catch(e){toast(e.message,true)}};
+}
+
+let insertPopover=null;
+function closeInsertMenu(){if(insertPopover){insertPopover.remove();insertPopover=null}}
+function positionInsertMenu(menu,anchor){const r=anchor.getBoundingClientRect(),mr=menu.getBoundingClientRect();let left=r.left,top=r.top-mr.height-8;if(left+mr.width>window.innerWidth-8)left=window.innerWidth-mr.width-8;if(left<8)left=8;if(top<8)top=Math.min(window.innerHeight-mr.height-8,r.bottom+8);menu.style.left=`${Math.round(left)}px`;menu.style.top=`${Math.round(top)}px`}
+function toggleInsertMenu(){
+  if(!state.current||$('#attachBtn')?.disabled)return;
+  if(insertPopover){closeInsertMenu();return}
+  const anchor=$('#attachBtn'),menu=document.createElement('div');menu.className='insert-popover';menu.innerHTML=`<div class="insert-popover-title">Inserir</div><button type="button" class="insert-action" data-insert="schedule"><span class="insert-action-icon">◴</span><span>Agendamento</span></button><button type="button" class="insert-action" data-insert="attach"><span class="insert-action-icon">⌕</span><span>Anexo</span></button><button type="button" class="insert-action" data-insert="contact"><span class="insert-action-icon">●</span><span>Contato</span></button><button type="button" class="insert-action" data-insert="poll"><span class="insert-action-icon">▣</span><span>Enquete</span></button>`;
+  document.body.appendChild(menu);insertPopover=menu;menu.classList.add('show');positionInsertMenu(menu,anchor);
+  menu.querySelector('[data-insert="attach"]').onclick=()=>{closeInsertMenu();$('#fileInput').click()};
+  menu.querySelector('[data-insert="schedule"]').onclick=()=>{closeInsertMenu();scheduleCurrentConversation()};
+  menu.querySelector('[data-insert="contact"]').onclick=()=>{closeInsertMenu();shareContactModal()};
+  menu.querySelector('[data-insert="poll"]').onclick=()=>{closeInsertMenu();pollModal()};
+  setTimeout(()=>document.addEventListener('pointerdown',function closer(e){if(!insertPopover){document.removeEventListener('pointerdown',closer,true);return}if(!insertPopover.contains(e.target)&&e.target!==anchor){closeInsertMenu();document.removeEventListener('pointerdown',closer,true)}},true),0);
+}
+async function scheduleCurrentConversation(){
+  if(!state.current?.contact?.id)return toast('Selecione uma conversa.',true);
+  const min=new Date(Date.now()+60000);min.setSeconds(0,0);const pad=n=>String(n).padStart(2,'0'),local=`${min.getFullYear()}-${pad(min.getMonth()+1)}-${pad(min.getDate())}T${pad(min.getHours())}:${pad(min.getMinutes())}`;
+  showModal('Agendar mensagem',`<div class="small muted" style="margin-bottom:9px">Contato: <b>${esc(state.current.contact.name||state.current.contact.phone||'Contato')}</b></div><label class="small muted">Data/hora</label><input class="input" type="datetime-local" id="insertScheduleWhen" min="${local}" value="${local}"><label class="small muted" style="display:block;margin-top:9px">Mensagem</label><textarea class="input" id="insertScheduleText" style="height:110px" placeholder="Digite a mensagem que será enviada..."></textarea><button class="btn primary" id="insertScheduleSave" style="margin-top:10px">Agendar</button>`);
+  $('#insertScheduleSave').onclick=async()=>{const when=$('#insertScheduleWhen').value,text=$('#insertScheduleText').value.trim();if(!when||!text)return toast('Informe data/hora e mensagem.',true);try{await api('/api/scheduled-messages',{method:'POST',body:{contactId:state.current.contact.id,instanceId:state.current.instanceId,when,text}});hideModal();toast('Mensagem agendada.')}catch(e){toast(e.message,true)}};
+}
+function vcardPhone(meta){const v=String(meta?.vcard||'');const m=v.match(/TEL(?:;[^:]*)?:([^\r\n]+)/i);return m?m[1].trim():''}
+function contactCardHtml(x){if(x.type!=='CONTACT')return'';const name=x.meta?.displayName||x.meta?.contacts?.[0]?.displayName||String(x.body||'Contato').replace(/^Contato:\s*/i,'');const phone=vcardPhone(x.meta)||vcardPhone(x.meta?.contacts?.[0])||'';return `<div class="contact-card-message"><div class="contact-card-avatar">👤</div><div class="contact-card-data"><b>${esc(name||'Contato')}</b>${phone?`<span>${esc(phone)}</span>`:''}</div></div>`}
+async function shareContactModal(){
+  if(!state.current)return toast('Selecione uma conversa.',true);
+  try{state.contacts=await api('/api/contacts');const contacts=(state.contacts||[]).filter(c=>c.phone&&!c.isGroup&&!c.isChannel);showModal('Enviar contato',`<input class="input contact-share-search" id="contactShareSearch" placeholder="Buscar contato por nome ou telefone"><div class="contact-share-list" id="contactShareList"></div>`);
+    const render=q=>{q=String(q||'').trim().toLowerCase();const rows=contacts.filter(c=>!q||`${c.name||''} ${c.phone||''}`.toLowerCase().includes(q)).slice(0,100);$('#contactShareList').innerHTML=rows.map(c=>`<div class="contact-share-item"><div class="contact-share-avatar">${esc(String(c.name||c.phone||'?').trim().charAt(0).toUpperCase()||'?')}</div><div><b>${esc(c.name||c.phone)}</b><span class="small muted">${fmtPhone(c.phone)}</span></div><button class="btn small primary" data-share-contact="${c.id}">Enviar</button></div>`).join('')||'<div class="empty">Nenhum contato encontrado.</div>';$$('[data-share-contact]').forEach(b=>b.onclick=()=>sendContactCard(b.dataset.shareContact))};
+    render('');$('#contactShareSearch').oninput=e=>render(e.target.value);$('#contactShareSearch').focus();
+  }catch(e){toast(e.message,true)}
+}
+async function sendContactCard(contactId){
+  if(!state.current)return;try{const d=await api(`/api/conversations/${state.current.id}/contact-card`,{method:'POST',body:{contactId}});const m=d.message;if(m&&!state.messages.some(x=>x.id===m.id))state.messages.push(m);hideModal();renderChat();scheduleConversationRefresh(150);toast(m?.status==='QUEUED'?'Contato salvo na fila; será enviado ao reconectar.':'Contato enviado.')}catch(e){toast(e.message,true)}
+}
+async function sendMessage(note=false,voiceFile=null){if(!state.current)return toast('Selecione uma conversa',true);if(['CLOSED','HISTORY'].includes(state.current.status))return toast(state.current.status==='HISTORY'?'Histórico somente leitura. Abra um novo atendimento para responder.':'Atendimento finalizado. Reabra a conversa para enviar mensagens.',true);const body=$('#composer').value.trim(),files=note?[]:(voiceFile?[voiceFile]:(state.pendingFiles||[]).map(x=>x.file));if(!body&&!files.length)return;if(note&&state.pendingFiles?.length&&!body)return toast('Notas internas não enviam anexos. Digite o texto da nota.',true);const fd=new FormData();fd.append('body',body);fd.append('note',String(note));if(state.replyTo)fd.append('replyTo',state.replyTo.id);if(voiceFile)fd.append('ptt','true');for(const f of files)fd.append('file',f);try{const d=await api(`/api/conversations/${state.current.id}/messages`,{method:'POST',body:fd});for(const messageItem of d.messages||[])if(!state.messages.some(x=>x.id===messageItem.id))state.messages.push(messageItem);$('#composer').value='';closeQuickSlashPopover();resizeComposer();$('#fileInput').value='';if(!note)clearPendingFiles();state.replyTo=null;renderReplyStrip();renderChat();scheduleConversationRefresh(250);const queued=(d.messages||[]).some(x=>x.status==='QUEUED');toast(note?'Nota interna salva.':(queued?'Mensagem salva na fila; será enviada ao reconectar.':'Mensagem enviada.'));if(note)setComposerMode('message')}catch(e){toast(e.message,true)}}
+let quickSlashRows=[],quickSlashIndex=0,quickSlashToken=null,quickSlashLoading=false,quickSlashCacheAt=0;
+function currentQuickReplyToken(){
+  const el=$('#composer');if(!el||state.composeMode==='note'||!state.current||el.disabled)return null;
+  const pos=Number(el.selectionStart??el.value.length),before=el.value.slice(0,pos),m=before.match(/(?:^|\s)(\/[^\s\n]*)$/);
+  if(!m)return null;const token=m[1];return{token,query:token.slice(1),start:pos-token.length,end:pos};
+}
+function quickAllowedRows(){return(state.quickReplies||[]).filter(q=>!q.departmentId||q.departmentId===state.current?.departmentId||state.me?.role==='SUPER_ADMIN')}
+function closeQuickSlashPopover(){quickSlashToken=null;quickSlashRows=[];quickSlashIndex=0;const box=$('#quickSlashPopover');if(box){box.classList.remove('show');box.innerHTML=''}}
+function positionQuickSlashSelection(){const box=$('#quickSlashPopover');if(!box)return;$$('#quickSlashPopover .quick-slash-item').forEach((el,i)=>el.classList.toggle('selected',i===quickSlashIndex));const active=$('#quickSlashPopover .quick-slash-item.selected');active?.scrollIntoView({block:'nearest'})}
+function renderQuickSlashPopover(token){const box=$('#quickSlashPopover');if(!box)return;quickSlashToken=token;if(quickSlashLoading){box.innerHTML='<div class="quick-slash-loading">Carregando respostas rápidas…</div>';box.classList.add('show');return}
+  const allowed=quickAllowedRows(),needle=safeSearch(token?.query||'');
+  const scored=allowed.map(q=>{const shortcut=String(q.shortcut||'').replace(/^\/+/,''),hay=safeSearch(`${shortcut} ${q.text||''} ${q.category||''}`),sc=safeSearch(shortcut);let score=0;if(!needle)score=1;else if(sc===needle)score=100;else if(sc.startsWith(needle))score=80;else if(hay.includes(needle))score=30;return{q,score}}).filter(x=>x.score>0).sort((a,b)=>Number(b.q.favorite)-Number(a.q.favorite)||b.score-a.score||String(a.q.shortcut||'').localeCompare(String(b.q.shortcut||''),'pt-BR')).slice(0,8);
+  quickSlashRows=scored.map(x=>x.q);if(quickSlashIndex>=quickSlashRows.length)quickSlashIndex=0;
+  if(!quickSlashRows.length){box.innerHTML=`<div class="quick-slash-empty">Nenhuma resposta encontrada para <b>/${esc(token?.query||'')}</b></div>`;box.classList.add('show');return}
+  box.innerHTML=`<div class="quick-slash-head"><b>Respostas rápidas</b><span>${quickSlashRows.length} resultado${quickSlashRows.length===1?'':'s'}</span></div><div class="quick-slash-list">${quickSlashRows.map((q,i)=>`<button type="button" class="quick-slash-item ${i===quickSlashIndex?'selected':''}" data-quick-slash="${esc(q.id)}"><span class="quick-slash-shortcut">${q.favorite?'★ ':''}/${esc(String(q.shortcut||'').replace(/^\/+/,''))}</span><span class="quick-slash-preview">${esc(quickVariables(q.text)).replace(/\n/g,' ')}</span><span class="quick-slash-category">${esc(q.category||'Geral')}</span></button>`).join('')}</div><div class="quick-slash-foot">↑ ↓ navegar &nbsp; • &nbsp; Enter inserir &nbsp; • &nbsp; Esc fechar</div>`;box.classList.add('show');
+  $$('[data-quick-slash]').forEach((b,i)=>{b.onmouseenter=()=>{quickSlashIndex=i;positionQuickSlashSelection()};b.onmousedown=e=>e.preventDefault();b.onclick=()=>insertQuickSlashReply(i)});
+}
+async function ensureQuickRepliesForSlash(){if(quickSlashLoading)return;const fresh=state.quickReplies?.length&&Date.now()-quickSlashCacheAt<60000;if(fresh)return;quickSlashLoading=true;const token=currentQuickReplyToken();if(token)renderQuickSlashPopover(token);try{state.quickReplies=await api('/api/quick-replies');quickSlashCacheAt=Date.now()}catch(e){toast('Não foi possível carregar as respostas rápidas: '+e.message,true)}finally{quickSlashLoading=false;const now=currentQuickReplyToken();if(now)renderQuickSlashPopover(now);else closeQuickSlashPopover()}}
+function handleQuickSlashInput(){const token=currentQuickReplyToken();if(!token)return closeQuickSlashPopover();quickSlashToken=token;quickSlashIndex=0;if(!state.quickReplies?.length||Date.now()-quickSlashCacheAt>=60000)ensureQuickRepliesForSlash();else renderQuickSlashPopover(token)}
+function insertQuickSlashReply(index=quickSlashIndex){const q=quickSlashRows[index],el=$('#composer'),token=quickSlashToken||currentQuickReplyToken();if(!q||!el||!token)return false;const replacement=quickVariables(q.text),before=el.value.slice(0,token.start),after=el.value.slice(token.end);el.value=before+replacement+after;const pos=before.length+replacement.length;el.setSelectionRange(pos,pos);closeQuickSlashPopover();resizeComposer();el.focus();el.dispatchEvent(new Event('input',{bubbles:true}));return true}
+function handleQuickSlashKeydown(e){const box=$('#quickSlashPopover');if(!box?.classList.contains('show'))return false;if(e.key==='ArrowDown'){e.preventDefault();if(quickSlashRows.length){quickSlashIndex=(quickSlashIndex+1)%quickSlashRows.length;positionQuickSlashSelection()}return true}if(e.key==='ArrowUp'){e.preventDefault();if(quickSlashRows.length){quickSlashIndex=(quickSlashIndex-1+quickSlashRows.length)%quickSlashRows.length;positionQuickSlashSelection()}return true}if((e.key==='Enter'||e.key==='Tab')&&!e.shiftKey&&quickSlashRows.length){e.preventDefault();insertQuickSlashReply();return true}if(e.key==='Escape'){e.preventDefault();closeQuickSlashPopover();return true}return false}
+function initQuickSlashAutocomplete(){const el=$('#composer');if(!el)return;document.addEventListener('pointerdown',e=>{const box=$('#quickSlashPopover');if(box?.classList.contains('show')&&!box.contains(e.target)&&e.target!==el)closeQuickSlashPopover()});el.addEventListener('click',()=>{if($('#quickSlashPopover')?.classList.contains('show'))handleQuickSlashInput()});el.addEventListener('keyup',e=>{if(['ArrowUp','ArrowDown','Enter','Escape','Tab'].includes(e.key))return;if($('#quickSlashPopover')?.classList.contains('show'))handleQuickSlashInput()})}
+function quickVariables(text=''){
+  const c=state.current,ct=c?.contact||{},first=String(ct.name||'').trim().split(/\s+/)[0]||'';const vars={nome:ct.name||'',primeiro_nome:first,telefone:fmtPhone(ct.phone||''),empresa:ct.company||'',polo:ct.campus||ct.triageData?.polo||'',setor:c?.department?.name||'',atendente:state.me?.name||'',assunto:ct.serviceTopic||ct.triageData?.assunto||''};
+  return String(text||'').replace(/\{([a-z_]+)\}/gi,(m,k)=>Object.prototype.hasOwnProperty.call(vars,k.toLowerCase())?vars[k.toLowerCase()]:m)
+}
+function safeSearch(v=''){return String(v||'').toLocaleLowerCase('pt-BR').normalize('NFD').replace(/[̀-ͯ]/g,'')}
+async function quickReply(){
+  state.quickReplies=await api('/api/quick-replies');quickSlashCacheAt=Date.now();const allowed=state.quickReplies.filter(q=>!q.departmentId||q.departmentId===state.current?.departmentId||state.me?.role==='SUPER_ADMIN');
+  const categories=[...new Set(allowed.map(q=>q.category||'Geral'))].sort();showModal('Respostas rápidas',`<div class="quick-browser-toolbar"><input class="input" id="quickSearch" placeholder="Buscar atalho ou texto..."><select class="input" id="quickCategory"><option value="">Todas as categorias</option>${categories.map(c=>`<option>${esc(c)}</option>`).join('')}</select></div><div id="quickList"></div>`);
+  const render=()=>{const qv=safeSearch($('#quickSearch').value),cat=$('#quickCategory').value,rows=allowed.filter(q=>(!cat||(q.category||'Geral')===cat)&&(!qv||safeSearch(`${q.shortcut} ${q.text} ${q.category||''}`).includes(qv))).sort((a,b)=>Number(b.favorite)-Number(a.favorite)||String(a.category||'').localeCompare(String(b.category||'')));$('#quickList').innerHTML=rows.map(q=>`<button class="btn quick-pick ${q.favorite?'favorite':''}" style="display:block;width:100%;margin:5px 0;text-align:left" data-id="${q.id}"><b>${q.favorite?'★ ':''}${esc(q.shortcut)}</b><div class="small muted">${esc(quickVariables(q.text))}</div><div class="quick-meta"><span class="quick-category">${esc(q.category||'Geral')}</span>${q.departmentId?`<span class="small muted">${esc(state.team.departments.find(d=>d.id===q.departmentId)?.name||'Setor')}</span>`:''}</div></button>`).join('')||'<div class="empty">Nenhuma resposta encontrada.</div>';$$('.quick-pick').forEach(b=>b.onclick=()=>{const q=allowed.find(x=>x.id===b.dataset.id);$('#composer').value=quickVariables(q.text);resizeComposer();hideModal();$('#composer').focus()})};$('#quickSearch').oninput=render;$('#quickCategory').onchange=render;render()
+}
+async function aiSuggest(){const last=[...state.messages].reverse().find(m=>m.direction==='IN')?.body||'';const d=await api('/api/ai/suggest',{method:'POST',body:{text:last}});$('#composer').value=d.text;resizeComposer();toast('Sugestão inserida para revisão')}
+async function aiSummary(){if(!state.current)return;const d=await api('/api/ai/summary',{method:'POST',body:{conversationId:state.current.id}});showModal('Resumo do atendimento',`<p>${esc(d.text)}</p><button class="btn" id="copySummary">Copiar resumo</button>`);$('#copySummary').onclick=()=>navigator.clipboard.writeText(d.text).then(()=>toast('Resumo copiado'))}
+async function claimConversation(){if(!state.current)return;const id=state.current.id;try{const claimed=await api(`/api/conversations/${id}/claim`,{method:'POST'});state.current=claimed;state.current.claimable=false;state.currentLock=null;toast('Atendimento assumido por você.');state.filter='MINE';await loadConversations($('#convSearch').value||'');if(!state.conversations.some(c=>c.id===id)){state.conversations.unshift(claimed);renderConversations()}await selectConversation(id)}catch(e){toast(e.message,true);await loadConversations($('#convSearch').value||'')}}
+function transfer(){
+  if(!state.current)return;
+  const isGroup=!!state.current.isGroup;
+  const activeUsers=state.team.users.filter(u=>u.active!==false);
+  showModal(isGroup?'Transferir grupo':'Transferir atendimento',`
+    <label class="small muted">Fila / setor</label>
+    <select class="input" id="trDept">${state.team.departments.filter(d=>d.active!==false).map(d=>`<option value="${d.id}" ${d.id===state.current.departmentId?'selected':''}>${esc(d.name)}</option>`).join('')}</select>
+    <label class="small muted" style="display:block;margin-top:8px">${isGroup?'Responsável pelo grupo':'Atendente'}</label>
+    <select class="input" id="trOwner"></select>
+    ${isGroup?'<div class="small muted" style="margin-top:6px">Grupos precisam ter um responsável e não são enviados para a Fila.</div>':''}
+    <textarea class="input" id="trNote" placeholder="Nota interna da transferência" style="margin-top:9px"></textarea>
+    <div class="transfer-summary" id="trSummary"></div>
+    <button class="btn primary" id="doTransfer" style="margin-top:9px">Confirmar transferência</button>
+  `);
+  const ownerSelect=$('#trOwner'),deptSelect=$('#trDept');
+  const fillOwners=()=>{
+    const dept=deptSelect.value;
+    const users=activeUsers.filter(u=>!u.departmentId||u.departmentId===dept);
+    const preferred=state.current.ownerId || (isGroup&&users.some(u=>u.id===state.me?.id)?state.me.id:'');
+    ownerSelect.innerHTML=`${isGroup?'':'<option value="">Voltar para a fila (sem responsável)</option>'}${users.map(u=>`<option value="${u.id}" ${u.id===preferred?'selected':''}>${esc(u.name)}${u.id===state.me?.id?' (você)':''}</option>`).join('')}`;
+    if(isGroup&&!ownerSelect.value&&users.length)ownerSelect.value=users[0].id;
+    updateSummary();
+  };
+  const updateSummary=()=>{
+    const selected=activeUsers.find(u=>u.id===ownerSelect.value),dept=state.team.departments.find(d=>d.id===deptSelect.value);
+    $('#trSummary').textContent=selected
+      ?`${isGroup?'O grupo':'O atendimento'} ficará com ${selected.name} • ${dept?.name||'fila selecionada'}`
+      :`O atendimento voltará para a fila compartilhada de ${dept?.name||'fila selecionada'}.`;
+  };
+  deptSelect.onchange=fillOwners;
+  ownerSelect.onchange=()=>{
+    const selected=activeUsers.find(u=>u.id===ownerSelect.value);
+    if(selected?.departmentId&&selected.departmentId!==deptSelect.value){
+      deptSelect.value=selected.departmentId;
+      fillOwners();
+      ownerSelect.value=selected.id;
+    }
+    updateSummary();
+  };
+  fillOwners();
+  $('#doTransfer').onclick=async()=>{
+    const id=state.current.id,targetOwnerId=ownerSelect.value||null;
+    if(isGroup&&!targetOwnerId){toast('Selecione um responsável para o grupo.',true);return}
+    try{
+      const updated=await api(`/api/conversations/${id}/transfer`,{method:'POST',body:{departmentId:deptSelect.value,ownerId:targetOwnerId,note:$('#trNote').value}});
+      hideModal();
+      if(updated.ownerId===state.me?.id){
+        state.filter='MINE';
+        state.conversationSubfilter='ALL';
+        state.current=updated;state.currentLock=null;
+        toast(isGroup?'Grupo atribuído a você e movido para Em atendimento.':'Atendimento transferido para você.');
+        await loadConversations($('#convSearch').value||'');
+        if(!state.conversations.some(c=>c.id===id)){state.conversations.unshift(updated);renderConversations()}
+        await selectConversation(id);
         return;
       }
-    }
-    const p = partes[2] || 'fila';
-    if (p === 'carteira' && pode('carteira.ver')) return paginaCarteira();
-    if (p === 'fila' && pode('fila.ver')) return paginaFila();
-    if (p === 'caso' && pode('caso.trabalhar')) return paginaCaso(partes[3]);
-    if (p === 'conversas' && pode('conversa.ver')) return paginaConversas(partes[3]);
-    if (p === 'importar' && (pode('carteira.importar') || pode('lotes.ver'))) return paginaImportar(partes[3]);
-    return ir(`#/o/${estado.orgId}/${pode('fila.ver') ? 'fila' : 'carteira'}`);
+      if(state.me?.role==='AGENT'&&updated.ownerId!==state.me.id){
+        state.current=null;state.currentLock=null;state.messages=[];renderEmptyConversation();state.filter='MINE';
+        toast(updated.ownerId?'Atendimento transferido. Ele saiu da sua lista.':'Atendimento devolvido para a fila.');
+      }else{
+        state.current=updated;state.currentLock=null;toast('Atendimento transferido com sucesso.');
+      }
+      await loadConversations($('#convSearch').value||'');
+      if(state.current?.id===id)await selectConversation(id);
+    }catch(e){toast(e.message,true)}
   }
-  estado.orgId = null; estado.ctx = null;
-  return paginaInicio();
+}
+async function deleteConversationAdmin(){
+  const c=state.current;if(!c||state.me?.role!=='SUPER_ADMIN')return;
+  const name=c.contact?.name||c.contact?.phone||'esta conversa';
+  showModal('Excluir conversa',`<div class="admin-delete-warning"><b>Exclusão permanente</b><br>Esta ação remove o atendimento e todas as mensagens/mídias locais da conversa. O contato continuará no CRM.</div><p>Conversa: <b>${esc(name)}</b></p><label class="small muted">Digite EXCLUIR para confirmar</label><input class="input" id="deleteConversationConfirm" autocomplete="off" placeholder="EXCLUIR"><button class="btn danger" id="confirmDeleteConversation" style="margin-top:10px">Excluir conversa definitivamente</button>`);
+  $('#confirmDeleteConversation').onclick=async()=>{if(String($('#deleteConversationConfirm').value||'').trim().toUpperCase()!=='EXCLUIR'){toast('Digite EXCLUIR para confirmar.',true);return}const id=c.id;try{await api(`/api/conversations/${id}`,{method:'DELETE'});hideModal();state.current=null;state.pinnedConversationId=null;state.currentLock=null;state.messages=[];renderEmptyConversation();toast('Conversa excluída. O contato foi preservado no CRM.');await loadConversations($('#convSearch').value||'')}catch(e){toast(e.message,true)}};
+}
+async function finalizeCurrentConversation(sendFarewell=false){
+  if(!state.current)return;
+  const id=state.current.id;
+  const currentFilter=state.filter;
+  const currentSubfilter=state.conversationSubfilter;
+  try{
+    if(sendFarewell){
+      let settings=state.settings&&Object.keys(state.settings).length?state.settings:null;
+      if(!settings)settings=await api('/api/settings');
+      const farewell=String(settings?.farewellMessage||'').trim();
+      if(!farewell){
+        toast('Cadastre uma mensagem de despedida em Configurações antes de usar esta opção.',true);
+        return;
+      }
+      const fd=new FormData();
+      fd.append('body',farewell);
+      fd.append('note','false');
+      const sent=await api(`/api/conversations/${id}/messages`,{method:'POST',body:fd});
+      for(const messageItem of sent?.messages||[])if(!state.messages.some(x=>x.id===messageItem.id))state.messages.push(messageItem);
+    }
+    const updated=await api(`/api/conversations/${id}/status`,{method:'POST',body:{status:'CLOSED',suppressCloseAutomation:true}});
+    hideModal();
+    state.current={...state.current,...updated,status:'CLOSED'};
+    state.pinnedConversationId=id;
+    state.currentLock=null;
+    state.replyTo=null;
+    if($('#composer'))$('#composer').value='';
+    clearPendingFiles();closeQuickSlashPopover();renderReplyStrip();
+    state.filter=currentFilter;
+    state.conversationSubfilter=currentSubfilter;
+
+    // O atendimento sai da lista operacional, mas a conversa permanece aberta
+    // na mesma tela para o usuário confirmar o encerramento.
+    if(state.filter!=='CLOSED'){
+      state.allConversations=state.allConversations.filter(c=>c.id!==id);
+      state.conversations=state.conversations.filter(c=>c.id!==id);
+      renderConversations();
+      try{
+        state.conversationStats=await api('/api/conversations/stats');
+        updateConversationFilterCounts();
+      }catch{}
+      renderReplyStrip();
+      renderChat(false);
+    }else{
+      await loadConversations($('#convSearch')?.value||'',{preserveChat:true});
+      state.current={...state.current,...updated,status:'CLOSED'};
+      renderChat(false);
+    }
+    toast(sendFarewell?'Mensagem de despedida enviada e atendimento finalizado.':'Atendimento finalizado sem mensagem de despedida.');
+  }catch(e){toast(e.message||'Não foi possível finalizar o atendimento.',true)}
 }
 
-window.addEventListener('hashchange', render);
-render();
+function closeConversation(){
+  if(!state.current)return;
+  if(state.current.status==='CLOSED'||state.current.status==='HISTORY'){
+    const wasHistory=state.current.status==='HISTORY';
+    api(`/api/conversations/${state.current.id}/status`,{method:'POST',body:{status:'OPEN'}}).then(async()=>{
+      toast(wasHistory?'Atendimento aberto a partir do histórico':'Atendimento reaberto');
+      state.pinnedConversationId=null;
+      state.filter='ALL';await loadConversations();await selectConversation(state.current.id)
+    }).catch(e=>toast(e.message,true));
+    return
+  }
+  showModal('Finalizar atendimento',`
+    <div class="close-choice">
+      <p>Como deseja encerrar este atendimento?</p>
+      <div class="close-choice-actions">
+        <button class="btn" id="cancelCloseConversation" type="button">Cancelar</button>
+        <button class="btn" id="closeWithoutFarewell" type="button">Finalizar sem mensagem de despedida</button>
+        <button class="btn primary" id="closeWithFarewell" type="button">Com mensagem de despedida</button>
+      </div>
+    </div>
+  `);
+  $('#cancelCloseConversation').onclick=hideModal;
+  $('#closeWithoutFarewell').onclick=()=>finalizeCurrentConversation(false);
+  $('#closeWithFarewell').onclick=()=>finalizeCurrentConversation(true);
+}
+async function startRecording(){if(state.mediaRecorder&&state.mediaRecorder.state==='recording'){state.mediaRecorder.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});const preferred=['audio/ogg;codecs=opus','audio/webm;codecs=opus','audio/webm'].find(x=>MediaRecorder.isTypeSupported(x));state.recordChunks=[];state.mediaRecorder=new MediaRecorder(stream,preferred?{mimeType:preferred}:undefined);state.mediaRecorder.ondataavailable=e=>{if(e.data.size)state.recordChunks.push(e.data)};state.mediaRecorder.onstop=async()=>{stream.getTracks().forEach(t=>t.stop());$('#recordBtn').classList.remove('recording');$('#recordBtn').textContent='● Áudio';const blob=new Blob(state.recordChunks,{type:state.mediaRecorder.mimeType||'audio/webm'}),ext=blob.type.includes('ogg')?'ogg':'webm',file=new File([blob],`voz-${Date.now()}.${ext}`,{type:blob.type});await sendMessage(false,file)};state.mediaRecorder.start();$('#recordBtn').classList.add('recording');$('#recordBtn').textContent='■ Parar';toast('Gravando áudio… clique novamente para enviar')}catch(e){toast('Não foi possível acessar o microfone: '+e.message,true)}}
+
+async function loadContacts(){state.contacts=await api('/api/contacts');renderContacts($('#crmSearch').value||'')}
+function classificationLabel(c={}){const v=String(c.profileType||c.classification||c.triageData?.perfil||'').toUpperCase();return({ALUNO:'Aluno',NAO_ALUNO:'Não aluno',INTERESSADO:'Interessado',INTERNO:'Interno',COLABORADOR:'Interno',RESPONSAVEL:'Responsável'}[v]||v||'Não classificado')}
+function renderContacts(filter=''){const q=safeSearch(filter);$('#crmBody').innerHTML=state.contacts.filter(c=>safeSearch(`${c.name} ${c.phone} ${c.company} ${c.email} ${classificationLabel(c)} ${c.campus||''} ${(c.tags||[]).join(' ')}`).includes(q)).map(c=>`<tr><td><b>${esc(c.name)}</b></td><td>${fmtPhone(c.phone)}</td><td><span class="classification-badge">${esc(classificationLabel(c))}</span></td><td>${esc(c.campus||c.triageData?.polo||'—')}</td><td>${esc(ptLabel(c.stage))}</td><td>${(c.tags||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join(' ')}</td><td><button class="btn small contact-chat" data-id="${c.id}">Conversar</button> <button class="btn small contact-history" data-id="${c.id}">Histórico</button> <button class="btn small edit-contact" data-id="${c.id}">Editar</button> <button class="btn small danger del-contact" data-id="${c.id}">Excluir</button></td></tr>`).join('');$$('.edit-contact').forEach(b=>b.onclick=()=>editContact(b.dataset.id));$$('.contact-chat').forEach(b=>b.onclick=()=>openContactChat(b.dataset.id));$$('.contact-history').forEach(b=>b.onclick=()=>showContactHistory(b.dataset.id));$$('.del-contact').forEach(b=>b.onclick=()=>deleteContact(b.dataset.id))}
+function contactForm(c={}){const cls=String(c.profileType||c.classification||'');return`<label class="small muted">Nome</label><input class="input" id="cfName" value="${esc(c.name||'')}"><label class="small muted">Telefone</label><input class="input" id="cfPhone" value="${esc(c.phone||'')}"><div class="grid cols-2"><div><label class="small muted">Classificação</label><select class="input" id="cfClassification"><option value="" ${!cls?'selected':''}>Não classificado</option><option value="ALUNO" ${cls==='ALUNO'?'selected':''}>Aluno</option><option value="INTERESSADO" ${cls==='INTERESSADO'||cls==='NAO_ALUNO'?'selected':''}>Interessado / não aluno</option><option value="INTERNO" ${cls==='INTERNO'||cls==='COLABORADOR'?'selected':''}>Interno / colaborador</option><option value="RESPONSAVEL" ${cls==='RESPONSAVEL'?'selected':''}>Responsável</option></select></div><div><label class="small muted">Polo</label><input class="input" id="cfCampus" value="${esc(c.campus||c.triageData?.polo||'')}"></div></div><label class="small muted">E-mail</label><input class="input" id="cfEmail" value="${esc(c.email||'')}"><label class="small muted">Empresa</label><input class="input" id="cfCompany" value="${esc(c.company||'')}"><label class="small muted">Etapa</label><select class="input" id="cfStage">${['NOVO_LEAD','CONTATO','INTERESSADO','PROPOSTA','NEGOCIACAO','VENDA','CLIENTE','PERDIDO'].map(stage=>`<option value="${stage}" ${c.stage===stage?'selected':''}>${esc(ptLabel(stage))}</option>`).join('')}</select><label class="small muted">Tags (separadas por vírgula)</label><input class="input" id="cfTags" value="${esc((c.tags||[]).join(', '))}"><label class="small muted">Observações</label><textarea class="input" id="cfNotes">${esc(c.notes||'')}</textarea>`}
+function newContact(){showModal('Novo contato',contactForm()+`<button class="btn primary" id="saveContact" style="margin-top:9px">Salvar</button>`);$('#saveContact').onclick=async()=>{try{await api('/api/contacts',{method:'POST',body:contactFormData()});hideModal();toast('Contato criado');loadContacts()}catch(e){toast(e.message,true)}}}
+function contactFormData(){return{name:$('#cfName').value,phone:$('#cfPhone').value,email:$('#cfEmail').value,company:$('#cfCompany').value,classification:$('#cfClassification').value,profileType:$('#cfClassification').value,campus:$('#cfCampus').value,stage:$('#cfStage').value,tags:$('#cfTags').value.split(',').map(x=>x.trim()).filter(Boolean),notes:$('#cfNotes').value}}
+function editContact(id,fromSide=false){const c=state.contacts.find(x=>x.id===id)||state.current?.contact;if(!c)return;showModal('Editar contato',contactForm(c)+`<button class="btn primary" id="saveContact" style="margin-top:9px">Salvar alterações</button>`);$('#saveContact').onclick=async()=>{await api(`/api/contacts/${id}`,{method:'PATCH',body:contactFormData()});hideModal();toast('Contato atualizado');await loadContacts();if(fromSide){await loadConversations();await selectConversation(state.current.id)}}}
+async function deleteContact(id){if(!confirm('Excluir este contato e seu histórico local?'))return;try{await api(`/api/contacts/${id}`,{method:'DELETE'});toast('Contato excluído');loadContacts()}catch(e){toast(e.message,true)}}
+async function newConversation(){
+  try{
+    if(!state.contacts.length) state.contacts=await api('/api/contacts');
+    state.connections=await api('/api/connections');
+    const orderedConnections=[...state.connections].sort((a,b)=>(b.state==='CONNECTED')-(a.state==='CONNECTED'));
+    const selectedConnection=state.connectionFilter&&state.connectionFilter!=='ALL'?orderedConnections.find(c=>c.id===state.connectionFilter):null;
+    const connected=(selectedConnection?.state==='CONNECTED'?selectedConnection:null)||orderedConnections.find(c=>c.state==='CONNECTED')||selectedConnection||null;
+    let selectedContactId='';
+    showModal('Nova conversa',`
+      <div class="grid" style="gap:10px">
+        <div>
+          <label class="small muted">Procurar contato</label>
+          <input class="input" id="ncContactSearch" placeholder="Digite o nome ou número" autocomplete="off">
+          <div id="ncSelectedContact" class="small muted" style="margin-top:6px">Nenhum contato selecionado.</div>
+          <div class="contact-share-list" id="ncContactResults" style="margin-top:8px;max-height:220px"></div>
+        </div>
+        <div id="ncNewFields">
+          <div class="small muted" style="margin-bottom:7px">Ou cadastre um novo número</div>
+          <label class="small muted">Nome</label>
+          <input class="input" id="ncName" placeholder="Nome do contato">
+          <label class="small muted" style="display:block;margin-top:7px">WhatsApp / telefone</label>
+          <input class="input" id="ncPhone" placeholder="Ex.: 5516999999999" inputmode="tel">
+        </div>
+        <div>
+          <label class="small muted">Conexão WhatsApp</label>
+          <select class="input" id="ncInstance">
+            ${orderedConnections.length?orderedConnections.map(c=>`<option value="${c.id}" ${connected?.id===c.id?'selected':''}>${esc(c.name)} • ${esc(c.state)}</option>`).join(''):'<option value="principal">WhatsApp principal • sem conexão cadastrada</option>'}
+          </select>
+          ${connected?'':'<div class="small muted" style="margin-top:5px">Nenhuma conexão está CONNECTED. A conversa será criada, mas mensagens podem ficar na fila até reconectar o WhatsApp.</div>'}
+        </div>
+        <div>
+          <label class="small muted">Fila / setor</label>
+          <select class="input" id="ncDepartment">
+            ${state.team.departments.filter(d=>d.active!==false).map(d=>`<option value="${d.id}" ${d.id===state.me?.departmentId?'selected':''}>${esc(d.name)}</option>`).join('')}
+          </select>
+        </div>
+        <button class="btn primary" id="ncOpen">Abrir conversa</button>
+      </div>`);
+
+    const search=$('#ncContactSearch'), results=$('#ncContactResults'), fields=$('#ncNewFields'), selected=$('#ncSelectedContact');
+    const phoneDigits=v=>String(v||'').replace(/\D/g,'');
+    const renderMatches=(query='')=>{
+      const q=String(query||'').trim().toLowerCase(), qDigits=phoneDigits(q);
+      const matches=state.contacts
+        .filter(c=>c.phone&&!c.isGroup&&!c.isChannel)
+        .filter(c=>!q||String(c.name||'').toLowerCase().includes(q)||phoneDigits(c.phone).includes(qDigits||'__nomatch__'))
+        .sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'pt-BR'))
+        .slice(0,12);
+      results.innerHTML=matches.length?matches.map(c=>`<button type="button" class="contact-share-item nc-contact-result" data-id="${c.id}" style="width:100%;text-align:left;color:inherit"><span class="contact-share-avatar">${esc(initials(c.name||c.phone))}</span><span><b style="display:block">${esc(c.name||c.phone)}</b><span class="small muted">${fmtPhone(c.phone)}</span></span><span class="small muted">Selecionar</span></button>`).join(''):`<div class="small muted" style="padding:8px">Nenhum contato encontrado. Você pode cadastrar o número abaixo.</div>`;
+      $$('.nc-contact-result').forEach(b=>b.onclick=()=>{
+        selectedContactId=b.dataset.id;
+        const c=state.contacts.find(x=>x.id===selectedContactId);
+        selected.innerHTML=`Contato selecionado: <b>${esc(c?.name||c?.phone||'')}</b> • ${fmtPhone(c?.phone||'')} <button type="button" class="btn small" id="ncClearContact" style="margin-left:6px">Trocar</button>`;
+        fields.style.display='none';
+        results.innerHTML='';
+        search.value=c?.name||c?.phone||'';
+        $('#ncClearContact').onclick=()=>{selectedContactId='';selected.textContent='Nenhum contato selecionado.';fields.style.display='block';search.value='';renderMatches('');search.focus()};
+      });
+    };
+    search.oninput=()=>{if(selectedContactId){selectedContactId='';selected.textContent='Nenhum contato selecionado.';fields.style.display='block'}const q=search.value;renderMatches(q);const digits=phoneDigits(q);if(digits.length>=8&&!$('#ncPhone').value)$('#ncPhone').value=digits};
+    search.onfocus=()=>{if(!selectedContactId)renderMatches(search.value)};
+    renderMatches('');
+
+    $('#ncOpen').onclick=async()=>{
+      try{
+        let contactId=selectedContactId;
+        if(!contactId){
+          const phone=$('#ncPhone').value.replace(/\D/g,'');
+          const name=$('#ncName').value.trim();
+          if(!phone) return toast('Procure um contato ou informe o telefone.',true);
+          const found=state.contacts.find(c=>String(c.phone||'').replace(/\D/g,'')===phone);
+          if(found) contactId=found.id;
+          else{
+            const created=await api('/api/contacts',{method:'POST',body:{name:name||phone,phone,source:'WhatsApp'}});
+            state.contacts.push(created); contactId=created.id;
+          }
+        }
+        const chosenInstance=$('#ncInstance').value||'principal',conversation=await api('/api/conversations',{method:'POST',body:{contactId,instanceId:chosenInstance,departmentId:$('#ncDepartment').value||state.me?.departmentId||'d-comercial',ownerId:state.me?.id||null}});
+        hideModal();
+        state.connectionFilter=chosenInstance;try{localStorage.setItem('balbino.connectionFilter',chosenInstance)}catch{}updateTop();
+        state.filter='ALL';
+        await loadConversations($('#convSearch').value||'');
+        if(!state.conversations.some(c=>c.id===conversation.id)){
+          state.conversations.unshift(conversation);
+          state.allConversations=state.allConversations||[];
+          if(!state.allConversations.some(c=>c.id===conversation.id)) state.allConversations.unshift(conversation);
+          renderConversations();
+        }
+        await selectConversation(conversation.id);
+        toast('Conversa aberta.');
+      }catch(e){toast(e.message,true)}
+    };
+  }catch(e){toast(e.message,true)}
+}
+
+async function openContactChat(id){const conns=state.connections.length?state.connections:await api('/api/connections'),selected=state.connectionFilter&&state.connectionFilter!=='ALL'?conns.find(c=>c.id===state.connectionFilter):null,instance=selected||conns.find(c=>c.state==='CONNECTED')||conns[0];if(!instance)return toast('Nenhuma conexão WhatsApp cadastrada.',true);const c=await api('/api/conversations',{method:'POST',body:{contactId:id,instanceId:instance.id}});state.connectionFilter=instance.id;try{localStorage.setItem('balbino.connectionFilter',instance.id)}catch{}state.filter='ALL';nav('inbox');await loadConversations();await selectConversation(c.id)}
+async function importCSV(file){const fd=new FormData();fd.append('file',file);try{const d=await api('/api/contacts/import',{method:'POST',body:fd});toast(`${d.created} criados, ${d.updated} atualizados`);loadContacts()}catch(e){toast(e.message,true)}}
+
+const stages=['NOVO_LEAD','CONTATO','INTERESSADO','PROPOSTA','NEGOCIACAO','VENDA'];
+async function loadGroups(q=''){const instanceParam=state.connectionFilter&&state.connectionFilter!=='ALL'?`&instanceId=${encodeURIComponent(state.connectionFilter)}`:'',d=await api(`/api/groups-channels?q=${encodeURIComponent(q)}&type=${encodeURIComponent(state.communityType||'ALL')}${instanceParam}&_=${Date.now()}`);state.groups=d.rows||[];state.communityCounts=d.counts||{ALL:0,GROUP:0,CHANNEL:0};renderGroups()}
+function renderGroups(){
+  const rows=state.groups||[],counts=state.communityCounts||{};$('#groupCount').textContent=`${Number(counts.ALL||rows.length)} itens`;
+  $$('#communityFilters .chip').forEach(b=>{const type=b.dataset.type;b.classList.toggle('active',type===state.communityType);const labels={ALL:'Todos',GROUP:'Grupos',CHANNEL:'Canais'};b.textContent=`${labels[type]} (${Number(counts[type]||0)})`});
+  $('#groupsBody').innerHTML=rows.length?rows.map(item=>{const isChannel=item.kind==='CHANNEL',last=item.conversation?.lastMessage?.body||'',meta=isChannel?`${Number(item.subscribers||0).toLocaleString('pt-BR')} seguidores${item.verification==='VERIFIED'?' • Verificado':''}`:`${Number(item.size||0)} participantes • ${Number(item.admins||0)} admins`;return `<div class="community-item"><div class="community-item-head"><div class="community-icon">${isChannel?'📣':'👥'}</div><div style="min-width:0"><div class="community-name">${esc(item.name|| (isChannel?'Canal WhatsApp':'Grupo WhatsApp'))}</div><span class="community-type">${isChannel?'Canal':'Grupo'}</span></div></div><div class="community-desc">${esc(item.description||'Sem descrição cadastrada.')}</div><div class="community-meta"><span>${esc(meta)}</span><span>${fmtDate(item.updatedAt)}</span></div>${last?`<div class="small muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Última: ${esc(last)}</div>`:''}<div class="community-actions">${isChannel?`<button class="btn small channel-view" data-id="${item.id}">Ver publicações</button><button class="btn small channel-refresh" data-id="${item.id}">Atualizar nome</button>`:`<button class="btn small group-open" data-id="${item.id}">${item.conversation?'Abrir conversa':'Iniciar conversa'}</button>`}</div></div>`}).join(''):'<div class="empty" style="grid-column:1/-1">Nenhum grupo ou canal encontrado. Os canais aparecem aqui quando o WhatsApp os disponibiliza no histórico ou em novas mensagens.</div>';
+  $$('.group-open').forEach(b=>b.onclick=()=>openGroupConversation(b.dataset.id));$$('.channel-view').forEach(b=>b.onclick=()=>viewChannel(b.dataset.id));$$('.channel-refresh').forEach(b=>b.onclick=()=>refreshChannel(b.dataset.id));
+}
+async function openGroupConversation(id){try{const c=await api(`/api/groups/${id}/open`,{method:'POST',body:{departmentId:state.me?.departmentId||'d-comercial'}});state.filter='GROUPS';nav('inbox');await loadConversations();const exists=state.conversations.find(x=>x.id===c.id);if(!exists){state.conversations.unshift(c);renderConversations()}await selectConversation(c.id)}catch(e){toast(e.message,true)}}
+async function viewChannel(id){try{const d=await api(`/api/channels/${id}/messages?limit=120&_=${Date.now()}`);const ch=d.channel||{};const msgs=d.messages||[];showModal(ch.name||'Canal WhatsApp',`<div class="small muted" style="margin-bottom:10px">📣 Canal WhatsApp • ${Number(ch.subscribers||0).toLocaleString('pt-BR')} seguidores${ch.verification==='VERIFIED'?' • Verificado':''}</div><div class="channel-message-list">${msgs.length?msgs.map(m=>`<div class="channel-message"><div class="small muted">${fmtDate(m.createdAt)}</div>${messageTextHtml(m)}${mediaHtml(m)}</div>`).join(''):'<div class="empty">Nenhuma publicação armazenada para este canal.</div>'}</div>`)}catch(e){toast(e.message,true)}}
+async function refreshChannel(id){try{toast('Atualizando dados do canal...');await api(`/api/channels/${id}/refresh`,{method:'POST'});await loadGroups($('#groupSearch').value||'');toast('Canal atualizado.')}catch(e){toast(e.message,true)}}
+async function syncGroups(){const conns=state.connections.length?state.connections:await api('/api/connections'),conn=(state.connectionFilter&&state.connectionFilter!=='ALL'?conns.find(c=>c.id===state.connectionFilter&&c.state==='CONNECTED'):null)||conns.find(c=>c.state==='CONNECTED');if(!conn)return toast(state.connectionFilter&&state.connectionFilter!=='ALL'?'A conexão selecionada não está conectada.':'Conecte o WhatsApp antes de sincronizar grupos e canais.',true);try{toast('Sincronizando grupos e canais conhecidos...');const d=await api('/api/groups/sync',{method:'POST',body:{instanceId:conn.id}});toast(`${Number(d.groups||d.count||0)} grupos e ${Number(d.channels||0)} canais atualizados`);await loadGroups($('#groupSearch').value||'')}catch(e){toast(e.message,true)}}
+
+
+// ===== v0.15.0 • FAQ automático =====
+async function faqCarregarFaltas(){const box=$('#faqMisses');if(!box)return;try{const rows=await api('/api/faq/misses');box.innerHTML=rows.length?rows.slice(0,40).map(x=>`<div style="padding:7px 0;border-bottom:1px solid var(--line)"><div>${esc(x.text)}</div><div class="small muted">${esc(x.contactName||'')} · ${fmtDate(x.at)}</div><button class="btn small" data-faq-criar="${esc(x.id)}">Criar resposta</button> <button class="btn small" data-faq-ignorar="${esc(x.id)}">Ignorar</button></div>`).join(''):'<p class="muted small">Nenhuma pergunta sem resposta. 🎉</p>';box.querySelectorAll('[data-faq-criar]').forEach(b=>b.onclick=()=>{const x=rows.find(r=>r.id===b.dataset.faqCriar);knowledgeForm({title:x.text.slice(0,80),category:'Geral',keywords:'',content:'',active:true});api(`/api/faq/misses?id=${encodeURIComponent(x.id)}`,{method:'DELETE'}).catch(()=>{})});box.querySelectorAll('[data-faq-ignorar]').forEach(b=>b.onclick=async()=>{await api(`/api/faq/misses?id=${encodeURIComponent(b.dataset.faqIgnorar)}`,{method:'DELETE'}).catch(e=>toast(e.message,true));faqCarregarFaltas()})}catch(e){box.innerHTML=`<p class="muted small">${esc(e.message)}</p>`}}
+async function faqTestar(){const t=$('#aiText').value;try{const r=await api('/api/faq/test',{method:'POST',body:{text:t}});$('#aiResult').textContent=r.found?`✅ O bot responderia com “${r.title}” (pontuação ${r.score}):\n\n${r.content}`:'❌ O bot não encontrou resposta. Essa conversa iria para um atendente. Cadastre uma resposta com palavras-chave dessa pergunta.'}catch(e){toast(e.message,true)}}
+async function faqMensagensForm(){const c=await api('/api/faq/config');const campos=[['faqPergunta','Ao escolher a opção do FAQ (pedido da dúvida)'],['faqConfirmacao','Depois da resposta (pergunta se resolveu)'],['faqResolvido','Quando responde 1 / Sim (o atendimento é finalizado)'],['faqTransferindo','Quando responde 2 / Atendente'],['faqNaoEncontrado','Quando o bot não encontra resposta']];showModal('Mensagens do bot (FAQ)',campos.map(([k,l])=>`<label class="small muted">${l}</label><textarea class="input" data-faq-cfg="${k}" rows="${k==='faqConfirmacao'?3:2}">${esc(c[k]||'')}</textarea>`).join('')+'<button class="btn primary" id="faqCfgSalvar" style="margin-top:10px">Salvar</button>');$('#faqCfgSalvar').onclick=async()=>{const b={};$$('[data-faq-cfg]').forEach(t=>b[t.dataset.faqCfg]=t.value);try{await api('/api/faq/config',{method:'PUT',body:b});toast('Mensagens salvas');hideModal()}catch(e){toast(e.message,true)}}}
+function faqInit(){if(window.__faqInit)return;window.__faqInit=true;if($('#aiTest'))$('#aiTest').onclick=faqTestar;if($('#faqMsgsBtn'))$('#faqMsgsBtn').onclick=faqMensagensForm;if($('#faqMissesRefresh'))$('#faqMissesRefresh').onclick=faqCarregarFaltas}
+document.addEventListener('DOMContentLoaded',faqInit);if(document.readyState!=='loading')setTimeout(faqInit,0);
+// ===== v0.15.0 • Configurações › Aparência da Rede =====
+async function aparenciaCard(){const host=$('#settings');if(!host||$('#aparenciaRede'))return;const isAdmin=state.me?.role==='SUPER_ADMIN';const b=state.brand||await api('/api/appearance').catch(()=>({defaultTheme:'hybrid',accent:'#2563eb',highlight:'#22d3ee'}));
+ const card=document.createElement('div');card.className='card pad';card.id='aparenciaRede';card.style.marginBottom='14px';
+ card.innerHTML=`<div class="section-title"><h2>Aparência</h2></div><p class="small muted">Cada pessoa escolhe o próprio modo no botão ☀ / 🌙 / 🌗 do topo. ${isAdmin?'Aqui você define o modo padrão e as cores da marca para todos.':'Somente o administrador altera as cores da marca.'}</p>
+ <div class="apar-grid"><div><label class="small muted">Modo padrão</label><select class="input" id="aparModo" ${isAdmin?'':'disabled'}><option value="hybrid">🌗 Híbrido (menu escuro, conteúdo claro)</option><option value="light">☀ Claro</option><option value="dark">🌙 Escuro</option></select></div>
+ <div><label class="small muted">Cor principal (botões, item ativo, mensagens enviadas)</label><div class="apar-cor"><input type="color" id="aparAccent" value="${b.accent}" ${isAdmin?'':'disabled'}><code id="aparAccentTxt">${b.accent}</code></div></div>
+ <div><label class="small muted">Cor de destaque (contadores e avisos)</label><div class="apar-cor"><input type="color" id="aparHl" value="${b.highlight}" ${isAdmin?'':'disabled'}><code id="aparHlTxt">${b.highlight}</code></div></div></div>
+ <div class="apar-previa"><span class="btn primary">Botão principal</span><span class="apar-badge">3</span><span class="apar-msg">Mensagem enviada</span><span class="small muted">Prévia</span></div>
+ <div style="display:flex;gap:8px;margin-top:12px"><button class="btn" id="aparMeuModo">Usar este modo agora</button>${isAdmin?'<button class="btn primary" id="aparSalvar">Salvar para todos</button><button class="btn" id="aparPadrao">Restaurar cores da Rede Balbino</button>':''}</div>`;
+ host.prepend(card);$('#aparModo').value=b.defaultTheme;
+ const previa=()=>{document.documentElement.style.setProperty('--accent',$('#aparAccent').value);document.documentElement.style.setProperty('--accent2',shadeHex($('#aparAccent').value,-28));document.documentElement.style.setProperty('--v2-hl',$('#aparHl').value);$('#aparAccentTxt').textContent=$('#aparAccent').value;$('#aparHlTxt').textContent=$('#aparHl').value};
+ $('#aparAccent').oninput=previa;$('#aparHl').oninput=previa;
+ $('#aparMeuModo').onclick=()=>{applyTheme($('#aparModo').value);if(state.me)persistAppearance({theme:$('#aparModo').value}).catch(()=>{})};
+ if($('#aparPadrao'))$('#aparPadrao').onclick=()=>{$('#aparAccent').value='#2563eb';$('#aparHl').value='#22d3ee';previa()};
+ if($('#aparSalvar'))$('#aparSalvar').onclick=async()=>{try{state.brand=await api('/api/appearance',{method:'PUT',body:{defaultTheme:$('#aparModo').value,accent:$('#aparAccent').value,highlight:$('#aparHl').value}});applyAppearance(state.appearance||{},false);toast('Aparência salva para todos')}catch(e){toast(e.message,true)}}}
+setInterval(()=>{if($('#settings')?.classList.contains('active'))aparenciaCard()},700);
+// ===== v0.15.0 • Ficha do aluno no painel do contato =====
+const PEND_ST_CURTO={NOVA:'Nova',ANDAMENTO:'Em andamento',AGUARDANDO_ALUNO:'Aguardando aluno',CONCLUIDA:'Concluída'};
+async function fichaContato(){
+  const c=state.current,side=$('#contactSide');if(!c||!side||c.isGroup||c.isChannel)return;
+  const ct=c.contact||{},prof=side.querySelector('.profile');if(!prof)return;
+  side.querySelector('#fichaAluno')?.remove();
+  const td=ct.triageData||{},polo=ct.campus||td.polo||'',curso=ct.course||'',ra=ct.ra||'';
+  const box=document.createElement('div');box.id='fichaAluno';box.className='ficha-aluno';
+  box.innerHTML=`<div class="ficha-meta">${c.protocol?`<span>${esc(c.protocol)}</span>`:''}${c.department?.name?`<span>Fila: ${esc(c.department.name)}</span>`:''}${c.owner?.name?`<span>Responsável: ${esc(c.owner.name)}</span>`:''}</div>
+  <div class="ficha-titulo"><b>Ficha do aluno</b><button class="btn small" id="fichaEditar">Editar</button></div>
+  <div class="ficha-grid"><div><span>Polo</span><b>${esc(polo||'—')}</b></div><div><span>Curso</span><b>${esc(curso||'—')}</b></div><div><span>RA</span><b>${esc(ra||'—')}</b></div><div><span>Perfil</span><b>${esc(ct.profileType==='ALUNO'?'Aluno':ct.profileType==='QUERO_SER_ALUNO'?'Quer ser aluno':(ct.profileType||'—'))}</b></div></div>
+  <div class="ficha-titulo"><b>Pendências</b><button class="btn small" id="fichaNovaPend">+ Nova</button></div><div id="fichaPends" class="small muted">Carregando…</div>
+  <div class="ficha-titulo"><b>Atendimentos</b></div><div id="fichaAtend" class="small muted">…</div>`;
+  prof.after(box);
+  window.BalbinoCobranca?.painelConversa?.(box,c); // área Cobrança (módulo GO Negocia)
+  $('#fichaEditar').onclick=()=>{showModal('Ficha do aluno',`<label class="small muted">Polo</label><input class="input" id="fPolo" value="${esc(polo)}"><label class="small muted">Curso</label><input class="input" id="fCurso" value="${esc(curso)}"><label class="small muted">RA</label><input class="input" id="fRa" value="${esc(ra)}"><button class="btn primary" id="fSalvar" style="margin-top:12px">Salvar</button>`);$('#fSalvar').onclick=async()=>{try{const r=await api(`/api/contacts/${ct.id}`,{method:'PATCH',body:{campus:$('#fPolo').value.trim(),course:$('#fCurso').value.trim(),ra:$('#fRa').value.trim()}});Object.assign(ct,{campus:r.campus,course:r.course,ra:r.ra});hideModal();toast('Ficha atualizada');fichaContato()}catch(e){toast(e.message,true)}}};
+  $('#fichaNovaPend').onclick=()=>pendForm({conversation:c});
+  try{const d=await api(`/api/pendencias?contactId=${encodeURIComponent(ct.id)}`);const el=$('#fichaPends');if(el)el.innerHTML=d.rows.length?d.rows.slice(0,8).map(x=>`<div class="ficha-pend ${x.atrasada?'atrasada':''}"><div><b>${esc(x.protocolo)}</b> ${esc(x.titulo)}</div><span class="ficha-chip st-${x.status}">${PEND_ST_CURTO[x.status]||x.status}${x.atrasada?' · atrasada':''}</span></div>`).join('')+(d.rows.length>8?`<div class="small muted">+ ${d.rows.length-8} mais na tela Pendências</div>`:''):'Nenhuma pendência.'}catch{}
+  try{const r=await api(`/api/conversations/${encodeURIComponent(c.id)}/previous?count=1`);const el=$('#fichaAtend');if(el)el.innerHTML=r.count?`${r.count} atendimento(s) anterior(es) · <a href="#" id="fichaVerHist">ver na conversa</a>`:'Primeiro atendimento deste contato.';$('#fichaVerHist')?.addEventListener('click',e=>{e.preventDefault();closeDetails();histPrevAbrir(c.id)})}catch{}
+}
+// clicar no nome ou na foto abre os detalhes do contato
+document.addEventListener('click',e=>{if(!state.current)return;if(e.target.closest?.('#chatName,#chatAvatar,.chat-identity .chat-name-row')){document.querySelector('.inbox')?.classList.add('show-details');renderContactSide();fichaContato()}});
+// ===== v0.15.0 • Histórico contínuo do contato =====
+const histPrev={dados:{},contagem:{},carregando:{}};
+function histPrevHtml(c){if(!c||c.isGroup||c.isChannel)return'';const d=histPrev.dados[c.id];if(d){if(!d.length)return'<div class="hist-prev-vazio small muted">Nenhum atendimento anterior deste contato.</div>';return d.map(x=>{const cab=`<div class="hist-sep"><b>${esc(x.protocol||'Atendimento')}</b> · ${fmtDate(x.createdAt)}${x.departmentName?' · '+esc(x.departmentName):''}${x.ownerName?' · '+esc(x.ownerName):''}${x.closeReason?' · '+esc(x.closeReason):''}${x.total>x.messages.length?` · últimas ${x.messages.length} de ${x.total} mensagens`:''}</div>`;return cab+x.messages.map(m=>`<div class="msg hist-msg ${m.direction==='OUT'?'out':m.direction==='NOTE'?'note':''}">${messageTextHtml(m)}${mediaHtml(m)}<div class="meta">${fmtDate(m.createdAt)}</div></div>`).join('')}).join('')+`<div class="hist-sep atual"><b>Atendimento atual</b> · ${esc(c.protocol||'')}</div>`}const n=histPrev.contagem[c.id];if(n===0)return'';return`<div class="hist-prev-bar"><button class="btn small" id="histPrevBtn" data-cid="${esc(c.id)}">↑ Ver atendimentos anteriores${n?` (${n})`:''}</button></div>`}
+async function histPrevContar(c){if(!c||c.isGroup||c.isChannel||histPrev.contagem[c.id]!=null||histPrev.carregando['n'+c.id])return;histPrev.carregando['n'+c.id]=true;try{const r=await api(`/api/conversations/${encodeURIComponent(c.id)}/previous?count=1`);histPrev.contagem[c.id]=r.count;const b=$('#histPrevBtn');if(state.current?.id===c.id){if(!r.count)b?.closest('.hist-prev-bar')?.remove();else if(b)b.textContent=`↑ Ver atendimentos anteriores (${r.count})`}}catch{}finally{delete histPrev.carregando['n'+c.id]}}
+async function histPrevAbrir(id){const btn=$('#histPrevBtn');if(btn){btn.disabled=true;btn.textContent='Carregando…'}try{const r=await api(`/api/conversations/${encodeURIComponent(id)}/previous`);histPrev.dados[id]=r.conversations||[];if(state.current?.id===id){const box=$('#messages')||document.querySelector('.messages');const alturaAntes=box?box.scrollHeight:0,topoAntes=box?box.scrollTop:0;renderChat(false);if(box)box.scrollTop=topoAntes+(box.scrollHeight-alturaAntes)}}catch(e){toast(e.message,true);if(btn){btn.disabled=false;btn.textContent='↑ Ver atendimentos anteriores'}}}
+document.addEventListener('click',e=>{const b=e.target.closest?.('#histPrevBtn');if(b)histPrevAbrir(b.dataset.cid)});
+// ===== v0.15.0 • Pendências (substitui Tarefas) =====
+const PEND_STATUS={NOVA:'Nova',ANDAMENTO:'Em andamento',AGUARDANDO_ALUNO:'Aguardando aluno',CONCLUIDA:'Concluída'};
+let pendCache={rows:[],tipos:[],users:[],departments:[],avisoPadrao:''},pendCarregadoEm=0;
+function pendTipoOptions(sel=null){return'<option value="">Nenhuma</option><option value="__FAQ" '+(sel==='__FAQ'?'selected':'')+'>💬 Responder pelo FAQ</option>'+(pendCache.tipos||[]).filter(t=>t.active!==false||t.id===sel).map(t=>`<option value="${esc(t.id)}" ${t.id===sel?'selected':''}>☷ Abrir pendência: ${esc(t.name)}</option>`).join('')}
+function pendAutoValor(o={}){return o.faqBot?'__FAQ':(o.pendenciaTipoId||null)}
+function pendAutoCampos(v){return{pendenciaTipoId:v&&v!=='__FAQ'?v:null,faqBot:v==='__FAQ'}}
+function pendDataBR(s){return s?String(s).split('-').reverse().join('/'):'—'}
+async function pendCarregarApoio(force=false){if(!force&&Date.now()-pendCarregadoEm<60000)return;const[t,team]=await Promise.all([api('/api/pendencias/tipos'),api('/api/team').catch(()=>({}))]);const users=team?.users||[],deps=team?.departments||[];pendCache.tipos=t.tipos||[];pendCache.avisoPadrao=t.avisoPadrao||'';pendCache.pedirDescricao=t.pedirDescricao||'';pendCache.confirmacao=t.confirmacao||'';pendCache.users=(Array.isArray(users)?users:users?.rows||[]).filter(x=>x.active!==false);if(!pendCache.users.length&&state.me)pendCache.users=[state.me];pendCache.departments=(Array.isArray(deps)?deps:[]).filter(d=>d.active!==false);pendCarregadoEm=Date.now();const sel=$('#pendFiltroSetor');if(sel&&sel.options.length<=1)sel.insertAdjacentHTML('beforeend',pendCache.departments.map(d=>`<option value="${esc(d.id)}">${esc(d.name)}</option>`).join(''))}
+async function pendAtualizarBadge(){try{const d=await api('/api/pendencias');const b=$('#navPendencias');if(b){b.textContent=d.atrasadas?`${d.abertas}·${d.atrasadas}!`:d.abertas;b.style.display=d.abertas?'':'none';b.title=`${d.abertas} aberta(s), ${d.atrasadas} atrasada(s)`}return d}catch{return null}}
+async function loadFollowups(){await pendCarregarApoio();const d=await pendAtualizarBadge()||{rows:[]};pendCache.rows=d.rows||[];renderPendencias()}
+function pendCardHtml(x,{compacto=false}={}){const opts=Object.entries(PEND_STATUS).map(([k,v])=>`<option value="${k}" ${k===x.status?'selected':''}>${v}</option>`).join('');return`<div class="pend-card ${x.atrasada?'atrasada':''}"><span class="m">${esc(x.protocolo)}${x.tipoName?' · '+esc(x.tipoName):''}${x.departmentName?' · '+esc(x.departmentName):''}</span><span class="t">${x.origem==='TRIAGEM'?'🤖 ':''}${esc(x.titulo)}</span>${compacto?'':`<span class="m">${esc(x.contactName)}${x.contactPhone?' · +'+esc(x.contactPhone):''}</span>`}<span class="m">Responsável: ${esc(x.responsavelName||'—')}</span><span class="${x.atrasada?'atr':'m'}">Prazo: ${pendDataBR(x.prazo)}${x.atrasada?' — ATRASADA':''}</span>${x.descricao?`<span class="m">${esc(x.descricao)}</span>`:''}${x.status==='CONCLUIDA'?`<span class="m">${x.avisadoEm?'✓ aluno avisado no WhatsApp':x.avisoErro?'⚠ aviso não enviado: '+esc(x.avisoErro):'sem aviso'}</span>`:''}<select class="input small" data-pend-status="${esc(x.id)}">${opts}</select><div class="acoes"><button class="btn small" data-pend-edit="${esc(x.id)}">Editar</button>${x.conversationId&&!compacto?`<button class="btn small" data-pend-open="${esc(x.conversationId)}">Abrir conversa</button>`:''}</div></div>`}
+function renderPendencias(){const board=$('#pendBoard');if(!board)return;const q=($('#pendBusca')?.value||'').toLowerCase(),fr=$('#pendFiltroResp')?.value||'',fs=$('#pendFiltroSetor')?.value||'',so=$('#pendSoAtrasadas')?.checked,me=state.me?.id;const rows=pendCache.rows.filter(x=>(!so||x.atrasada)&&(!fs||x.departmentId===fs)&&(!fr||(fr==='__eu'?x.responsavelId===me:fr==='__sem'?!x.responsavelId:true))&&(!q||[x.protocolo,x.titulo,x.contactName,x.contactPhone,x.descricao].join(' ').toLowerCase().includes(q)));const abertas=rows.filter(x=>x.status!=='CONCLUIDA');if($('#pendResumo'))$('#pendResumo').textContent=`${abertas.length} aberta(s) · ${abertas.filter(x=>x.atrasada).length} atrasada(s)`;board.innerHTML=Object.entries(PEND_STATUS).map(([k,v])=>{const it=rows.filter(x=>x.status===k);return`<div class="pend-col"><h4>${v}<span class="muted">${it.length}</span></h4>${it.map(x=>pendCardHtml(x)).join('')||'<div class="muted small">—</div>'}</div>`}).join('');pendLigarAcoes(board)}
+function pendLigarAcoes(raiz){raiz.querySelectorAll('[data-pend-status]').forEach(sel=>sel.onchange=async()=>{sel.disabled=true;try{const r=await api(`/api/pendencias/${sel.dataset.pendStatus}`,{method:'PATCH',body:{status:sel.value}});toast(sel.value==='CONCLUIDA'?(r.aviso==='enviado'?'Concluída — aluno avisado no WhatsApp':r.aviso?'Concluída, mas o aviso '+r.aviso:'Concluída'):'Situação atualizada',Boolean(r.aviso&&r.aviso!=='enviado'));await pendRecarregarTudo()}catch(e){toast(e.message,true);sel.disabled=false}});raiz.querySelectorAll('[data-pend-edit]').forEach(b=>b.onclick=()=>pendForm({pendencia:pendCache.rows.find(x=>x.id===b.dataset.pendEdit)}));raiz.querySelectorAll('[data-pend-open]').forEach(b=>b.onclick=async()=>{nav('inbox');try{await selectConversation(b.dataset.pendOpen)}catch{}})}
+async function pendRecarregarTudo(){if($('#followups')?.classList.contains('active'))await loadFollowups();else await pendAtualizarBadge();if(state.current?.id&&$('#pendConversaLista'))pendListaConversa(state.current.id)}
+async function pendForm({pendencia=null,conversation=null}={}){await pendCarregarApoio();const x=pendencia||{};const tipos=pendCache.tipos.filter(t=>t.active!==false);let contatoHtml='';if(!pendencia&&!conversation){if(!state.contacts.length)state.contacts=await api('/api/contacts');contatoHtml=`<label class="small muted">Contato</label><select class="input" id="pfContato">${state.contacts.filter(c=>!c.isGroup&&!c.isChannel).map(c=>`<option value="${esc(c.id)}">${esc(c.name||c.phone)}${c.phone?' · '+esc(c.phone):''}</option>`).join('')}</select>`}const users=pendCache.users,me=state.me?.id;showModal(pendencia?`Editar ${x.protocolo}`:'Nova pendência',`${conversation?`<p class="muted small">Contato: <b>${esc(conversation.contact?.name||conversation.contactName||'')}</b></p>`:''}${contatoHtml}<label class="small muted">O que foi pedido?</label><input class="input" id="pfTitulo" value="${esc(x.titulo||'')}" placeholder="Ex.: Declaração de matrícula"><label class="small muted">Tipo de pedido</label><select class="input" id="pfTipo"><option value="">—</option>${tipos.map(t=>`<option value="${esc(t.id)}" data-dias="${t.prazoDias}" ${t.id===x.tipoId?'selected':''}>${esc(t.name)} · ${t.prazoDias} dia(s)</option>`).join('')}</select><label class="small muted">Prazo (em branco = pelo tipo)</label><input class="input" type="date" id="pfPrazo" value="${esc(x.prazo||'')}"><label class="small muted">Responsável</label><select class="input" id="pfResp"><option value="">Sem responsável</option>${users.map(v=>`<option value="${esc(v.id)}" ${(pendencia?x.responsavelId:me)===v.id?'selected':''}>${esc(v.name)}</option>`).join('')}</select><label class="small muted">Observação</label><textarea class="input" id="pfDesc" rows="3">${esc(x.descricao||'')}</textarea><div style="display:flex;gap:8px;margin-top:12px"><button class="btn primary" id="pfSalvar">${pendencia?'Salvar':'Criar pendência'}</button>${pendencia&&['SUPER_ADMIN','SUPERVISOR'].includes(state.me?.role)?'<button class="btn danger-soft" id="pfExcluir">Excluir</button>':''}</div>`);
+  if(!pendencia&&$('#pfTipo'))$('#pfTipo').onchange=()=>{const t=pendCache.tipos.find(v=>v.id===$('#pfTipo').value);if(t?.responsavelId&&[...$('#pfResp').options].some(o=>o.value===t.responsavelId))$('#pfResp').value=t.responsavelId};
+  $('#pfSalvar').onclick=async()=>{const body={titulo:$('#pfTitulo').value,tipoId:$('#pfTipo').value||null,prazo:$('#pfPrazo').value||null,responsavelId:$('#pfResp').value||'',descricao:$('#pfDesc').value};try{if(pendencia)await api(`/api/pendencias/${x.id}`,{method:'PATCH',body});else{if(conversation)body.conversationId=conversation.id;else body.contactId=$('#pfContato')?.value;const r=await api('/api/pendencias',{method:'POST',body});toast(`Pendência ${r.protocolo} criada`)}hideModal();await pendRecarregarTudo()}catch(e){toast(e.message,true)}};
+  if($('#pfExcluir'))$('#pfExcluir').onclick=async()=>{if(!confirm('Excluir esta pendência?'))return;try{await api(`/api/pendencias/${x.id}`,{method:'DELETE'});hideModal();await pendRecarregarTudo()}catch(e){toast(e.message,true)}}}
+function newFollow(){return pendForm()}
+async function pendListaConversa(conversationId){const box=$('#pendConversaLista');if(!box)return;try{const d=await api(`/api/pendencias?conversationId=${encodeURIComponent(conversationId)}`);box.innerHTML=d.rows.map(x=>pendCardHtml(x,{compacto:true})).join('')||'<div class="muted small">Nenhuma pendência para esta conversa.</div>';pendCache.rows=[...pendCache.rows.filter(r=>r.conversationId!==conversationId),...d.rows];pendLigarAcoes(box)}catch(e){box.innerHTML=`<div class="muted small">${esc(e.message)}</div>`}}
+async function pendBotaoConversa(){const c=state.current;if(!c)return;showModal('Pendências do contato','<div id="pendConversaLista" style="max-height:52vh;overflow:auto"><div class="muted small">Carregando…</div></div><button class="btn primary" id="pendNovaConv" style="margin-top:10px">+ Nova pendência</button>');$('#pendNovaConv').onclick=()=>pendForm({conversation:c});pendListaConversa(c.id)}
+async function pendTiposForm(){if(!['SUPER_ADMIN','SUPERVISOR'].includes(state.me?.role))return toast('Somente supervisores alteram os tipos de pedido.',true);await pendCarregarApoio(true);const deps=pendCache.departments;const linha=(t={})=>`<div class="pend-card" data-tipo-row="${esc(t.id||'')}"><div style="display:grid;grid-template-columns:1fr 90px;gap:6px"><input class="input" data-f="name" value="${esc(t.name||'')}" placeholder="Nome do tipo"><input class="input" type="number" min="0" data-f="prazoDias" value="${t.prazoDias??2}" title="Prazo em dias"></div><select class="input" data-f="departmentId"><option value="">Setor: o da conversa</option>${deps.map(d=>`<option value="${esc(d.id)}" ${d.id===t.departmentId?'selected':''}>Setor: ${esc(d.name)}</option>`).join('')}</select><select class="input" data-f="responsavelId"><option value="">Responsável: quem criar / sem responsável</option>${pendCache.users.map(v=>`<option value="${esc(v.id)}" ${v.id===t.responsavelId?'selected':''}>Responsável: ${esc(v.name)}</option>`).join('')}</select><textarea class="input" data-f="mensagemConclusao" rows="2" placeholder="Mensagem ao concluir (em branco = mensagem padrão)">${esc(t.mensagemConclusao||'')}</textarea><label class="small"><input type="checkbox" data-f="active" ${t.active!==false?'checked':''}> ativo</label></div>`;showModal('Tipos de pedido',`<p class="muted small">Use <b>{nome}</b>, <b>{protocolo}</b> e <b>{titulo}</b>. <b>{, nome}</b> coloca a vírgula só quando houver nome.</p><label class="small muted">Bot — pedido de descrição (use {tipo})</label><textarea class="input" id="ptPedir" rows="2">${esc(pendCache.pedirDescricao)}</textarea><label class="small muted">Bot — confirmação (use {protocolo}, {tipo}, {prazo})</label><textarea class="input" id="ptConfirma" rows="3">${esc(pendCache.confirmacao)}</textarea><label class="small muted">Mensagem padrão ao concluir</label><textarea class="input" id="ptPadrao" rows="2">${esc(pendCache.avisoPadrao)}</textarea><p class="muted small">Para o bot abrir pendências sozinho: em <b>Automação → Fluxos de atendimento</b>, escolha o tipo no campo <b>Abrir pendência</b> da opção.</p><div id="ptLista" style="max-height:48vh;overflow:auto;margin-top:10px">${pendCache.tipos.map(linha).join('')}</div><div style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="ptNovo">+ Tipo</button><button class="btn primary" id="ptSalvar">Salvar</button></div>`);$('#ptNovo').onclick=()=>$('#ptLista').insertAdjacentHTML('beforeend',linha({}));$('#ptSalvar').onclick=async()=>{const tipos=[...$$('[data-tipo-row]')].map(r=>{const g=f=>r.querySelector(`[data-f="${f}"]`);return{id:r.dataset.tipoRow||undefined,name:g('name').value,prazoDias:g('prazoDias').value,departmentId:g('departmentId').value||null,responsavelId:g('responsavelId').value||null,mensagemConclusao:g('mensagemConclusao').value,active:g('active').checked}}).filter(t=>t.name.trim());try{await api('/api/pendencias/tipos',{method:'PUT',body:{tipos,avisoPadrao:$('#ptPadrao').value,pedirDescricao:$('#ptPedir').value,confirmacao:$('#ptConfirma').value}});pendCarregadoEm=0;toast('Tipos de pedido salvos');hideModal()}catch(e){toast(e.message,true)}}}
+function pendInit(){if(window.__pendInit)return;window.__pendInit=true;if($('#pendBtn'))$('#pendBtn').onclick=pendBotaoConversa;if($('#pendTiposBtn'))$('#pendTiposBtn').onclick=pendTiposForm;if($('#pendBusca'))$('#pendBusca').oninput=renderPendencias;for(const id of['pendFiltroResp','pendFiltroSetor','pendSoAtrasadas'])if($('#'+id))$('#'+id).onchange=renderPendencias;setInterval(()=>{if(!state.me)return;if($('#followups')?.classList.contains('active'))loadFollowups().catch(()=>{});else pendAtualizarBadge()},20000);setTimeout(()=>{if(state.me)pendAtualizarBadge()},2500)}
+document.addEventListener('DOMContentLoaded',pendInit);if(document.readyState!=='loading')setTimeout(pendInit,0);
+
+async function loadScheduled(){if(!state.contacts.length)state.contacts=await api('/api/contacts');state.scheduled=await api('/api/scheduled-messages');$('#scheduledBody').innerHTML=state.scheduled.sort((a,b)=>new Date(a.when)-new Date(b.when)).map(s=>{const c=state.contacts.find(x=>x.id===s.contactId);return`<tr><td>${fmtDate(s.when)}</td><td>${esc(c?.name||'Contato')}</td><td>${esc(s.text).slice(0,90)}</td><td><span class="status ${s.status==='SENT'?'ok':s.status==='FAILED'?'bad':'wait'}">${esc(ptLabel(s.status))}</span></td><td>${s.status==='PENDING'?`<button class="btn small danger sched-del" data-id="${s.id}">Cancelar</button>`:''}</td></tr>`}).join('')||'<tr><td colspan="5" class="muted">Nenhuma mensagem agendada.</td></tr>';$$('.sched-del').forEach(b=>b.onclick=async()=>{await api(`/api/scheduled-messages/${b.dataset.id}`,{method:'DELETE'});loadScheduled()})}
+function newScheduled(){showModal('Agendar mensagem',`<label class="small muted">Contato</label><select class="input" id="sContact">${state.contacts.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select><label class="small muted">Data/hora</label><input class="input" type="datetime-local" id="sWhen"><label class="small muted">Mensagem</label><textarea class="input" id="sText" style="height:100px"></textarea><button class="btn primary" id="sSave" style="margin-top:9px">Agendar</button>`);$('#sSave').onclick=async()=>{await api('/api/scheduled-messages',{method:'POST',body:{contactId:$('#sContact').value,when:$('#sWhen').value,text:$('#sText').value}});hideModal();toast('Mensagem agendada');loadScheduled()}}
+
+async function loadAutomations(){state.automations=await api('/api/automations');$('#automationList').innerHTML=state.automations.map((a,i)=>`<div class="automation"><div class="iconbox">${String(i+1).padStart(2,'0')}</div><div><b>${esc(a.name)}</b><div class="small muted">${esc(automationRuleLabel(a.trigger))} → ${esc(automationRuleLabel(a.action))}</div><div style="margin-top:4px"><button class="btn small edit-auto" data-id="${a.id}">Editar</button> <button class="btn small danger del-auto" data-id="${a.id}">Excluir</button></div></div><button class="toggle ${a.enabled?'on':''}" data-id="${a.id}"></button></div>`).join('');$$('.toggle').forEach(t=>t.onclick=async()=>{const a=state.automations.find(x=>x.id===t.dataset.id);await api(`/api/automations/${a.id}`,{method:'PATCH',body:{enabled:!a.enabled}});loadAutomations()});$$('.edit-auto').forEach(b=>b.onclick=()=>automationForm(state.automations.find(x=>x.id===b.dataset.id)));$$('.del-auto').forEach(b=>b.onclick=async()=>{await api(`/api/automations/${b.dataset.id}`,{method:'DELETE'});loadAutomations()})}
+function automationForm(a=null){showModal(a?'Editar automação':'Criar automação',`<label class="small muted">Nome</label><input class="input" id="aName" value="${esc(a?.name||'')}"><label class="small muted">Gatilho (comando interno)</label><input class="input" id="aTrigger" value="${esc(a?.trigger||'KEYWORD:')}"><label class="small muted">Ação (comando interno)</label><input class="input" id="aAction" value="${esc(a?.action||'MOVE:d-financeiro')}"><button class="btn primary" id="aSave" style="margin-top:9px">Salvar</button>`);$('#aSave').onclick=async()=>{const payload={name:$('#aName').value,trigger:$('#aTrigger').value,action:$('#aAction').value};if(a)await api(`/api/automations/${a.id}`,{method:'PATCH',body:payload});else await api('/api/automations',{method:'POST',body:payload});hideModal();toast('Automação salva');loadAutomations()}}
+
+async function loadKnowledge(){state.knowledge=await api('/api/knowledge');faqCarregarFaltas();$('#knowledgeList').innerHTML=state.knowledge.map(k=>`<div style="padding:8px 0;border-bottom:1px solid var(--line)"><b>${esc(k.title)}</b> <span class="chip">${esc(k.category)}</span>${k.active===false?' <span class="chip">inativo</span>':k.autoReply===false?' <span class="chip">só sugestão</span>':' <span class="chip">💬 bot</span>'}<div class="small muted" style="margin:4px 0">${k.keywords?`<b>Palavras-chave:</b> ${esc(k.keywords)}<br>`:'<b style="color:var(--warn)">Sem palavras-chave — o bot quase não vai encontrar</b><br>'}${esc(k.content).slice(0,150)}${k.hits?`<br>Usado ${k.hits}x pelo bot · resolveu ${k.resolved||0}x`:''}</div><button class="btn small edit-kb" data-id="${k.id}">Editar</button> <button class="btn small danger del-kb" data-id="${k.id}">Excluir</button></div>`).join('')||'<p class="muted">Base vazia.</p>';$$('.edit-kb').forEach(b=>b.onclick=()=>knowledgeForm(state.knowledge.find(x=>x.id===b.dataset.id)));$$('.del-kb').forEach(b=>b.onclick=async()=>{await api(`/api/knowledge/${b.dataset.id}`,{method:'DELETE'});loadKnowledge()})}
+function knowledgeForm(k=null){showModal(k?'Editar conhecimento':'Novo conhecimento',`<label class="small muted">Título</label><input class="input" id="kbTitle" value="${esc(k?.title||'')}"><label class="small muted">Categoria</label><input class="input" id="kbCat" value="${esc(k?.category||'Geral')}"><label class="small muted">Palavras-chave (separadas por vírgula) — ex.: contrato, termo de estágio, assinar contrato</label><input class="input" id="kbKeywords" value="${esc(k?.keywords||'')}"><label class="small muted">Conteúdo</label><textarea class="input" id="kbContent" style="height:150px">${esc(k?.content||'')}</textarea><p><label><input type="checkbox" id="kbActive" ${k?.active===false?'':'checked'}> Ativo</label> &nbsp; <label><input type="checkbox" id="kbAuto" ${k?.autoReply===false?'':'checked'}> O bot pode enviar esta resposta ao aluno</label></p><button class="btn primary" id="kbSave">Salvar</button>`);$('#kbSave').onclick=async()=>{const payload={title:$('#kbTitle').value,category:$('#kbCat').value,keywords:$('#kbKeywords').value,autoReply:$('#kbAuto').checked,content:$('#kbContent').value,active:$('#kbActive').checked};if(k)await api(`/api/knowledge/${k.id}`,{method:'PATCH',body:payload});else await api('/api/knowledge',{method:'POST',body:payload});hideModal();loadKnowledge()}}
+
+async function loadMedia(){const media=await api('/api/media');$('#mediaGrid').innerHTML=media.length?media.map(mediaItem=>`<div class="media">${mediaItem.file.mimetype?.startsWith('image/')?`<img src="${esc(mediaItem.file.path)}" style="width:100%;height:90px;object-fit:cover;border-radius:7px;margin-bottom:7px">`:''}<b>${esc(mediaItem.file.name)}</b><span class="small muted">${esc(mediaItem.file.mimetype)} • ${esc(mediaItem.conversation?.contact?.name||'Contato')} • ${mediaItem.direction==='IN'?'Recebido':'Enviado'}</span><a class="btn small" target="_blank" href="${esc(mediaItem.file.path)}" style="margin-top:7px;text-align:center;text-decoration:none">Abrir</a></div>`).join(''):'<div class="card pad muted">Nenhuma mídia armazenada.</div>'}
+async function showContactHistory(contactId){
+  try{const d=await api(`/api/contacts/${contactId}/history`),ct=d.contact||{};showModal(`Histórico • ${esc(ct.name||'Contato')}`,`<div class="contact-history-kpis"><div><b>${Number(d.conversations?.length||0)}</b><span class="small muted">Atendimentos</span></div><div><b>${Number(d.messageCount||0)}</b><span class="small muted">Mensagens</span></div><div><b>${Number(d.followups?.length||0)}</b><span class="small muted">Pendências</span></div></div><div style="margin-top:12px"><div class="info-row"><b>Classificação</b>${esc(classificationLabel(ct))}</div><div class="info-row"><b>Polo</b>${esc(ct.campus||ct.triageData?.polo||'—')}</div><div class="info-row"><b>Entradas / Saídas</b>${Number(d.incoming||0)} recebidas • ${Number(d.outgoing||0)} enviadas</div></div><h3>Atendimentos recentes</h3>${(d.conversations||[]).slice(0,10).map(c=>`<div class="search-hit contact-history-conv" data-id="${c.id}"><b>${esc(c.department?.name||'Sem setor')}</b><div class="small muted">${esc(c.owner?.name||'Sem responsável')} • ${fmtDate(c.updatedAt)} • ${esc(c.status||'')}</div></div>`).join('')||'<div class="muted">Nenhum atendimento.</div>'}`);$$('.contact-history-conv').forEach(x=>x.onclick=async()=>{hideModal();state.filter=state.me?.role==='SUPER_ADMIN'?'ALL':'MINE';nav('inbox');await loadConversations();await selectConversation(x.dataset.id)})}catch(e){toast(e.message,true)}
+}
+async function showAssignmentHistory(){if(!state.current)return;try{const rows=await api(`/api/conversations/${state.current.id}/assignment-history`);const labels={CONVERSATION_CLAIMED:'Atendimento assumido',CONVERSATION_TRANSFERRED:'Transferência',CONVERSATION_AUTO_ASSIGNED:'Distribuição automática',CONVERSATION_STATUS_CHANGED:'Situação alterada',CONVERSATION_REACTIVATED_BY_CUSTOMER:'Cliente respondeu — atendimento reativado'};showModal('Histórico de responsáveis',`<div class="assignment-history">${rows.map(r=>`<div class="assignment-item"><b>${esc(labels[r.event]||r.event)}</b><div>${r.previousOwnerName?`${esc(r.previousOwnerName)} → `:''}${esc(r.ownerName||r.departmentName||r.status||'Fila')}</div><div class="small muted">${fmtDate(r.createdAt)}${r.byName?` • por ${esc(r.byName)}`:''}</div></div>`).join('')||'<div class="empty">Ainda não há movimentações registradas.</div>'}</div>`)}catch(e){toast(e.message,true)}}
+async function returnToQueue(){if(!state.current||!state.current.ownerId)return;try{const updated=await api(`/api/conversations/${state.current.id}/transfer`,{method:'POST',body:{departmentId:state.current.departmentId,ownerId:null,note:'Atendimento devolvido para a fila.'}});state.current=updated;state.currentLock=null;toast('Atendimento devolvido para a fila.');await loadConversations($('#convSearch').value||'')}catch(e){toast(e.message,true)}}
+async function changeAttendanceStatus(){if(!state.current)return;const labels={OPEN:'Em atendimento',WAITING_CUSTOMER:'Aguardando cliente',WAITING_INTERNAL:'Aguardando setor interno'};showModal('Situação do atendimento',`<p class="small muted">Protocolo: <b>${esc(state.current.protocol||'—')}</b></p><label class="small muted">Situação</label><select class="input" id="attendanceStatus"><option value="OPEN" ${state.current.status==='OPEN'?'selected':''}>Em atendimento</option><option value="WAITING_CUSTOMER" ${state.current.status==='WAITING_CUSTOMER'?'selected':''}>Aguardando cliente</option><option value="WAITING_INTERNAL" ${state.current.status==='WAITING_INTERNAL'?'selected':''}>Aguardando setor interno</option></select><button class="btn primary" id="saveAttendanceStatus" style="margin-top:10px">Salvar situação</button>`);$('#saveAttendanceStatus').onclick=async()=>{try{const next=$('#attendanceStatus').value,updated=await api(`/api/conversations/${state.current.id}/status`,{method:'POST',body:{status:next}});state.current=updated;hideModal();toast(`Situação alterada para ${labels[next]||next}.`);await loadConversations($('#convSearch').value||'');if(state.conversations.some(c=>c.id===updated.id))await selectConversation(updated.id)}catch(e){toast(e.message,true)}}}
+async function searchConversation(){if(!state.current)return;showModal('Buscar nesta conversa',`<div class="quick-browser-toolbar"><input class="input" id="conversationSearchInput" placeholder="Digite uma palavra, nome ou link..."><select class="input" id="conversationSearchType"><option value="ALL">Tudo</option><option value="TEXT">Texto</option><option value="LINK">Links</option><option value="IMAGE">Imagens</option><option value="DOCUMENT">Documentos</option><option value="AUDIO">Áudios</option><option value="VIDEO">Vídeos</option></select></div><div class="conversation-search-results" id="conversationSearchResults"><div class="muted">Digite para pesquisar no histórico completo desta conversa.</div></div>`);let timer;const run=async()=>{clearTimeout(timer);timer=setTimeout(async()=>{const q=$('#conversationSearchInput').value.trim(),type=$('#conversationSearchType').value;if(!q&&type==='ALL'){return $('#conversationSearchResults').innerHTML='<div class="muted">Digite algo ou selecione um tipo de conteúdo.</div>'}try{const rows=await api(`/api/conversations/${state.current.id}/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}`);$('#conversationSearchResults').innerHTML=rows.map(m=>`<div class="conversation-search-hit" data-mid="${m.id}"><div class="hit-meta"><span>${m.direction==='IN'?'Recebida':m.direction==='OUT'?'Enviada':'Nota interna'} • ${esc(m.type||'')}</span><span>${fmtDate(m.createdAt)}</span></div><div>${esc(m.snippet||'').replace(/\n/g,' ')}</div></div>`).join('')||'<div class="empty">Nenhum resultado.</div>';$$('.conversation-search-hit').forEach(x=>x.onclick=()=>jumpToConversationMessage(x.dataset.mid))}catch(e){toast(e.message,true)}},180)};$('#conversationSearchInput').oninput=run;$('#conversationSearchType').onchange=run;setTimeout(()=>$('#conversationSearchInput').focus(),40)}
+async function jumpToConversationMessage(messageId){hideModal();if(!state.messages.some(m=>m.id===messageId)){try{const d=await api(`/api/conversations/${state.current.id}/messages?paged=1&limit=500`);state.messages=d.messages||[];state.messagePaging={hasMore:!!d.hasMore,oldestAt:d.oldestAt||null,loading:false};renderChat(false)}catch(e){return toast(e.message,true)}}requestAnimationFrame(()=>{const el=document.querySelector(`[data-mid="${CSS.escape(messageId)}"]`);if(el){chatFollowBottom=false;el.scrollIntoView({behavior:'smooth',block:'center'});el.classList.add('search-target');setTimeout(()=>el.classList.remove('search-target'),1800)}})}
+async function loadSupervisor(){try{const d=await api('/api/supervisor');$('#supervisorCards').innerHTML=[['Em atendimento',d.active],['Aguardando',d.waiting],['Sem atividade',d.staleCount],['Maior espera',fmtDuration(d.longestWaitSeconds)],['Transferências hoje',d.transfersToday],['Finalizados hoje',d.closedToday],['Não lidas',d.unread],['Atendentes online',(d.agents||[]).filter(a=>a.status==='ONLINE').length]].map(x=>`<div class="card pad kpi"><div class="label">${x[0]}</div><div class="value">${x[1]}</div></div>`).join('');$('#supervisorOnline').textContent=`${(d.agents||[]).filter(a=>a.status==='ONLINE').length} online`;$('#supervisorAgents').innerHTML=`<table class="table"><tr><th>Atendente</th><th>Situação</th><th>Setor</th><th>Ativos</th><th>Não lidas</th><th>Parados</th></tr>${(d.agents||[]).map(a=>`<tr><td><b>${esc(a.name)}</b></td><td><span class="supervisor-agent-status"><span class="supervisor-dot ${a.status==='ONLINE'?'online':''}"></span>${esc(ptLabel(a.status))}</span></td><td>${esc(a.departmentName)}</td><td>${a.active}</td><td>${a.unread}</td><td>${a.stale?`<span class="attention-badge">${a.stale}</span>`:'0'}</td></tr>`).join('')}</table>`;$('#supervisorQueues').innerHTML=(d.queues||[]).map(q=>`<div class="supervisor-queue-row"><b>${esc(q.name)}</b><span>${q.waiting} aguardando</span><span class="small muted">${q.waiting?`máx. ${fmtDuration(q.longestWaitSeconds)}`:'sem espera'}</span></div>`).join('');$('#supervisorStale').innerHTML=`<table class="table"><tr><th>Contato</th><th>Responsável</th><th>Setor</th><th>Sem atividade</th><th></th></tr>${(d.stale||[]).map(c=>`<tr><td><b>${esc(c.contact?.name||c.contact?.phone||'Contato')}</b></td><td>${esc(c.owner?.name||'Fila')}</td><td>${esc(c.department?.name||'—')}</td><td><span class="attention-badge">${fmtDuration(c.idleSeconds)}</span></td><td><button class="btn small supervisor-open-conv" data-id="${c.id}">Abrir</button></td></tr>`).join('')}</table>`;$$('.supervisor-open-conv').forEach(b=>b.onclick=async()=>{state.filter='ALL';nav('inbox');await loadConversations();await selectConversation(b.dataset.id)})}catch(e){toast(e.message,true)}}
+async function distributeQueueNow(){if(!confirm('Distribuir agora os atendimentos aguardando para os atendentes online, respeitando rodízio/menor carga de cada setor?'))return;try{const d=await api('/api/queue/distribute',{method:'POST',body:{}});toast(`${d.assigned} atendimento(s) distribuído(s). ${d.remaining} permaneceram na fila.`);loadSupervisor()}catch(e){toast(e.message,true)}}
+async function loadReports(){const r=await api('/api/reports');$('#reportCards').innerHTML=[['Conversas',r.total],['Abertas',r.open],['Finalizadas',r.closed],['Não lidas',r.unread],['1ª resposta',fmtDuration(r.avgFirstResponseSeconds)],['Resolução',fmtDuration(r.avgResolutionSeconds)],['Satisfação',r.csat],['Taxa finalização',`${r.total?Math.round(r.closed/r.total*100):0}%`]].map(x=>`<div class="card pad kpi"><div class="label">${x[0]}</div><div class="value">${x[1]}</div></div>`).join('');$('#agentReport').innerHTML=`<table class="table"><tr><th>Atendente</th><th>Atend.</th><th>Resolvidas</th><th>Satisfação</th></tr>${r.agents.map(a=>`<tr><td>${esc(a.name)}</td><td>${a.assigned}</td><td>${a.resolved}</td><td>${a.csat}</td></tr>`).join('')}</table>`;$('#deptReport').innerHTML=`<table class="table"><tr><th>Setor</th><th>Total</th><th>Abertas</th></tr>${r.byDepartment.map(d=>`<tr><td>${esc(d.name)}</td><td>${d.count}</td><td>${d.open}</td></tr>`).join('')}</table>`;const l=r.leads||{};if($('#leadReportCards'))$('#leadReportCards').innerHTML=[['Leads',l.total||0],['Tratados',`${l.treated||0} (${l.treatmentRate||0}%)`],['Nunca tratados',l.neverTreated||0],['Interessados',l.interested||0],['Matriculados',`${l.enrolled||0} (${l.conversionRate||0}%)`],['Matrícula em andamento',l.enrollmentInProgress||0],['Retornos atrasados',l.overdue||0],['Sem responsável',l.unassigned||0],['Perdidos',l.lost||0]].map(x=>`<div class="lead-report-card"><b>${x[1]}</b><span>${x[0]}</span></div>`).join('');if($('#leadAgentReport'))$('#leadAgentReport').innerHTML=`<table class="table"><tr><th>Atendente</th><th>Carteira</th><th>Tratados</th><th>Interessados</th><th>Matrículas</th><th>Conversão</th></tr>${(r.agents||[]).filter(a=>a.leadAssigned||a.leadTreated||a.leadEnrolled).map(a=>`<tr><td>${esc(a.name)}</td><td>${a.leadAssigned||0}</td><td>${a.leadTreated||0} (${a.leadTreatmentRate||0}%)</td><td>${a.leadInterested||0}</td><td>${a.leadEnrolled||0}</td><td>${a.leadConversionRate||0}%</td></tr>`).join('')||'<tr><td colspan="6">Nenhum lead distribuído.</td></tr>'}</table>`;if($('#leadBaseReport'))$('#leadBaseReport').innerHTML=`<table class="table"><tr><th>Base</th><th>Leads</th><th>Tratados</th><th>Interessados</th><th>Matrículas</th><th>Conversão</th></tr>${(r.leadByBase||[]).map(b=>`<tr><td>${esc(b.name)}</td><td>${b.total}</td><td>${b.treated}</td><td>${b.interested}</td><td>${b.enrolled}</td><td>${b.conversionRate}%</td></tr>`).join('')||'<tr><td colspan="6">Nenhuma base importada.</td></tr>'}</table>`}
+
+async function loadConnections(){
+  state.connections=await api('/api/connections');updateTop();
+  $('#connBody').innerHTML=state.connections.map(c=>{
+    const err=c.lastError?.message?`<div class="small" style="color:#ff919b;margin-top:4px;max-width:300px">${esc(c.lastError.message)}${c.lastError.status?` (código ${esc(c.lastError.status)})`:''}</div>`:'';
+    const bad=['DISCONNECTED','EXPIRED','ERROR'].includes(c.state),sync=c.sync||{};
+    const activeSync=['STARTING','WAITING_PHONE','RECEIVING','RETRYING'].includes(sync.status);
+    const syncLine=sync.status&&sync.status!=='IDLE'?`<div class="small muted" style="margin-top:5px">Sincronização: ${esc(ptLabel(sync.status))} • contatos ${Number(sync.contacts||0)} • mensagens ${Number(sync.messages||0)}${sync.duplicates?` • duplicadas ${Number(sync.duplicates)}`:''}</div>`:'';
+    const syncDisabled=c.state!=='CONNECTED'||activeSync;
+    const av=c.avatarSync||{},avatarRunning=av.status==='RUNNING',caps=c.interactiveCapabilities||{};
+    const avatarLine=av.status&&av.status!=='IDLE'?`<div class="small muted" style="margin-top:4px">Fotos: ${esc(ptLabel(av.status))} • ${Number(av.processed||0)}/${Number(av.total||0)} • atualizadas ${Number(av.updated||0)} • sem foto/privacidade ${Number(av.noPhoto||0)} • erros ${Number(av.errors||0)}</div>`:'';
+    const capLine=(caps.quickReply||caps.singleSelect)?`<div class="capability-line">Interativos: botões <b>${esc(ptLabel(caps.quickReply||'UNKNOWN'))}</b> • lista <b>${esc(ptLabel(caps.singleSelect||'UNKNOWN'))}</b></div>`:'';
+    const rx=c.receiveStats||{},rxLine=Number(rx.received||0)?`<div class="small muted receive-health" style="margin-top:4px">Recebimento: ${Number(rx.processed||0)}/${Number(rx.received||0)} processadas • grupos ${Number(rx.groups||0)} • duplicadas ${Number(rx.duplicates||0)} • erros ${Number(rx.errors||0)}${rx.mediaRecovered?` • mídias recuperadas ${Number(rx.mediaRecovered)}`:''}</div>`:'';
+    return `<tr><td><b>${esc(c.name)}</b><div class="small muted">${esc(c.id)}</div></td><td>${c.phone?fmtPhone(c.phone):'—'}</td><td><span class="status ${c.state==='CONNECTED'?'ok':bad?'bad':'wait'}">● ${esc(ptLabel(c.state))}</span>${err}${syncLine}${avatarLine}${capLine}${rxLine}</td><td>${fmtDate(c.lastEventAt)}</td><td><div style="display:flex;gap:5px;flex-wrap:wrap"><button class="btn small conn-connect" data-id="${c.id}" ${['CONNECTING','RECONNECTING','QR_REQUIRED'].includes(c.state)||activeSync||avatarRunning?'disabled':''}>${c.state==='CONNECTED'?'Reconectar':c.state==='EXPIRED'?'Novo QR':'Conectar'}</button><button class="btn small conn-qr" data-id="${c.id}">QR</button><details class="conn-more"><summary class="btn small">⋯ Mais</summary><div class="conn-more-menu"><button class="btn small interactive-test" data-id="${c.id}" ${c.state!=='CONNECTED'||activeSync?'disabled':''}>Testar interativos</button><button class="btn small sync-contacts" data-id="${c.id}" ${syncDisabled||avatarRunning?'disabled':''}>Sincronizar contatos</button><button class="btn small sync-photos" data-id="${c.id}" ${c.state!=='CONNECTED'||avatarRunning||activeSync?'disabled':''}>Sincronizar fotos</button><button class="btn small sync-history" data-id="${c.id}" ${syncDisabled||avatarRunning?'disabled':''}>Conversas antigas</button><button class="btn small primary sync-all" data-id="${c.id}" ${syncDisabled||avatarRunning?'disabled':''}>Sincronizar tudo</button>${activeSync?`<button class="btn small danger sync-cancel" data-id="${c.id}">Cancelar sincronização</button>`:''}<button class="btn small danger conn-disconnect" data-id="${c.id}">Desconectar</button><button class="btn small danger conn-delete" data-id="${c.id}" data-name="${esc(c.name)}" title="Excluir esta conexão do Balbino Chat">Excluir conexão</button></div></details></div></td></tr>`;
+  }).join('');
+  $$('.conn-connect').forEach(b=>b.onclick=()=>connectWhatsApp(b.dataset.id));
+  $$('.conn-qr').forEach(b=>b.onclick=()=>showQR(b.dataset.id));
+  $$('.conn-disconnect').forEach(b=>b.onclick=()=>disconnectWhatsApp(b.dataset.id));
+  $$('.conn-delete').forEach(b=>b.onclick=()=>deleteWhatsAppConnection(b.dataset.id,b.dataset.name));
+  $$('.interactive-test').forEach(b=>b.onclick=()=>testInteractiveFeatures(b.dataset.id));
+  $$('.sync-contacts').forEach(b=>b.onclick=()=>syncWhatsApp(b.dataset.id,'CONTACTS'));
+  $$('.sync-photos').forEach(b=>b.onclick=()=>syncContactPhotos(b.dataset.id));
+  $$('.sync-history').forEach(b=>b.onclick=()=>syncWhatsApp(b.dataset.id,'HISTORY'));
+  $$('.sync-all').forEach(b=>b.onclick=()=>syncWhatsApp(b.dataset.id,'ALL'));
+  $$('.sync-cancel').forEach(b=>b.onclick=()=>cancelSyncWhatsApp(b.dataset.id));
+}
+
+async function testInteractiveFeatures(id){
+  if(!confirm('O Balbino Chat enviará duas mensagens de teste para o próprio WhatsApp conectado: uma com botões e outra com lista. Deseja continuar?'))return;
+  try{toast('Testando recursos interativos…');const d=await api(`/api/connections/${id}/interactive-test`,{method:'POST'}),c=d.capabilities||{};showModal('Teste de recursos interativos',`<p>O conector tentou enviar os formatos para o próprio número conectado.</p><div class="info-row"><b>Botões rápidos</b>${esc(c.quickReply||'UNKNOWN')}</div><div class="info-row"><b>Lista de seleção</b>${esc(c.singleSelect||'UNKNOWN')}</div><p class="small muted">“SENT” significa que o envio foi aceito pelo conector. Confira no WhatsApp se o formato foi renderizado corretamente. Se um formato falhar, o modo Automático usa outro recurso disponível ou as opções por nome em texto — sem menu numérico.</p>`);await loadConnections()}catch(e){toast(e.message,true)}}
+async function connectWhatsApp(id){toast('Iniciando conexão...');try{await api(`/api/connections/${id}/connect`,{method:'POST'});await loadConnections();await showQR(id,true)}catch(e){toast(e.message,true)}}
+async function showQR(id,wait=false){let d;for(let i=0;i<(wait?30:1);i++){d=await api(`/api/connections/${id}/qr`);if(d.qr||['CONNECTED','ERROR','EXPIRED','DISCONNECTED'].includes(d.state))break;if(wait)await new Promise(r=>setTimeout(r,1000))}const error=d?.lastError?.message?`<div style="margin-top:10px;padding:9px;border:1px solid #4a2025;background:#2b171a;border-radius:9px;color:#ffb2b9"><b>Falha na conexão</b><br>${esc(d.lastError.message)}${d.lastError.status?`<br>Código: ${esc(d.lastError.status)}`:''}</div>`:'';showModal('Conectar WhatsApp',d?.qr?`<p class="muted">WhatsApp → Dispositivos conectados → Conectar dispositivo.</p><img class="qr" src="${d.qr}"><p class="small muted" style="text-align:center">${esc(d.state)}${d.waVersion?` • WA Web ${esc(d.waVersion)}`:''}</p>`:`<p>Estado atual: <b>${esc(d?.state||'DESCONHECIDO')}</b></p>${error}<p class="muted">${d?.state==='CONNECTED'?'A sessão está conectada.':d?.state==='EXPIRED'?'A sessão salva expirou. Feche esta janela e clique em Novo QR para autenticar novamente.':'Aguardando QR ou atualização da conexão.'}</p>`)}
+async function disconnectWhatsApp(id){await api(`/api/connections/${id}/disconnect`,{method:'POST',body:{logout:false}});toast('Instância desconectada');loadConnections()}
+
+
+async function deleteWhatsAppConnection(id,name='Conexão'){
+  if(state.me?.role!=='SUPER_ADMIN')return toast('Somente o administrador pode excluir conexões.',true);
+  const c=state.connections.find(x=>x.id===id),label=name||c?.name||id;
+  showModal('Excluir conexão',`<div class="danger-confirm"><p><b>Excluir “${esc(label)}”?</b></p><p class="muted">A sessão deste WhatsApp será removida do Balbino Chat. O histórico de conversas, contatos e mensagens já armazenados será preservado.</p><p class="small muted">Agendamentos pendentes vinculados a esta conexão serão cancelados. Para confirmar, digite <b>EXCLUIR</b>.</p><input class="input" id="deleteConnectionConfirm" autocomplete="off" placeholder="Digite EXCLUIR"><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn" id="deleteConnectionCancel">Cancelar</button><button class="btn danger" id="deleteConnectionApply" disabled>Excluir conexão</button></div></div>`);
+  const input=$('#deleteConnectionConfirm'),apply=$('#deleteConnectionApply');
+  input.oninput=()=>apply.disabled=input.value.trim().toUpperCase()!=='EXCLUIR';
+  $('#deleteConnectionCancel').onclick=hideModal;
+  apply.onclick=async()=>{if(input.value.trim().toUpperCase()!=='EXCLUIR')return;apply.disabled=true;apply.textContent='Excluindo…';try{const d=await api(`/api/connections/${encodeURIComponent(id)}`,{method:'DELETE'});hideModal();toast(`Conexão ${label} excluída${d.cancelledScheduled?` • ${d.cancelledScheduled} agendamento(s) cancelado(s)`:''}.`);await loadConnections();updateTop()}catch(e){apply.disabled=false;apply.textContent='Excluir conexão';toast(e.message,true)}};
+  setTimeout(()=>input.focus(),40);
+}
+async function syncWhatsApp(id,mode='ALL'){
+  const labels={CONTACTS:'contatos',HISTORY:'conversas antigas',ALL:'contatos e conversas antigas'};
+  if(!confirm(`Sincronizar ${labels[mode]||'dados'} desta conexão?\n\nO Balbino Chat não dispara respostas automáticas durante a importação e ignora mensagens já existentes.`))return;
+  try{
+    const d=await api(`/api/connections/${id}/sync`,{method:'POST',body:{mode}});
+    showSyncProgress(id,d.sync);
+  }catch(e){toast(e.message,true)}
+}
+function avatarSyncHtml(id,a={}){
+  const status=String(a.status||'IDLE'),pct=a.total?Math.round(Number(a.processed||0)/Number(a.total)*100):0;
+  const labels={RUNNING:'Sincronizando fotos...',CANCEL_REQUESTED:'Pausando...',CANCELLED:'Sincronização pausada',INTERRUPTED:'Sincronização interrompida',ERROR:'Sincronização interrompida por erro',COMPLETED:'Sincronização concluída',IDLE:'Pronta para sincronizar'};
+  const running=['RUNNING','CANCEL_REQUESTED'].includes(status);
+  const canResume=['CANCELLED','INTERRUPTED','ERROR','IDLE'].includes(status);
+  return `<p><b>${esc(labels[status]||status)}</b></p><div style="height:9px;background:var(--panel3);border-radius:999px;overflow:hidden"><div style="height:100%;width:${Math.max(2,Math.min(100,pct))}%;background:var(--accent)"></div></div><div class="grid cols-2" style="margin-top:12px"><div class="card pad"><div class="small muted">Processados nesta rodada</div><b style="font-size:22px">${Number(a.processed||0)}/${Number(a.total||0)}</b></div><div class="card pad"><div class="small muted">Fotos atualizadas</div><b style="font-size:22px">${Number(a.updated||0)}</b></div><div class="card pad"><div class="small muted">Sem foto / privada</div><b style="font-size:22px">${Number(a.noPhoto||0)}</b></div><div class="card pad"><div class="small muted">Erros</div><b style="font-size:22px">${Number(a.errors||0)}</b></div><div class="card pad"><div class="small muted">Já verificados / ignorados</div><b style="font-size:22px">${Number(a.skipped||0)}</b></div><div class="card pad"><div class="small muted">Progresso</div><b style="font-size:22px">${pct}%</b></div></div>${a.currentContact?`<p class="small"><b>Agora:</b> ${esc(a.currentContact)}</p>`:''}${a.note?`<p class="muted small">${esc(a.note)}</p>`:''}${a.error?`<p style="color:var(--danger)" class="small">${esc(a.error)}</p>`:''}<p class="muted small">A sincronização é incremental: ao retomar, contatos já verificados recentemente não são consultados novamente. Contatos sem foto visível ou com privacidade restrita permanecem com as iniciais.</p><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">${running?`<button class="btn danger" id="avatarSyncCancel" data-id="${esc(id)}">Pausar sincronização</button>`:''}${canResume?`<button class="btn primary" id="avatarSyncResume" data-id="${esc(id)}">Retomar sincronização</button>`:''}</div>`;
+}
+function bindAvatarSyncActions(id){
+  const cancel=$('#avatarSyncCancel');if(cancel)cancel.onclick=async()=>{try{await api(`/api/connections/${id}/sync-photos/cancel`,{method:'POST'});toast('Pausando sincronização...')}catch(e){toast(e.message,true)}};
+  const resume=$('#avatarSyncResume');if(resume)resume.onclick=async()=>{resume.disabled=true;try{await api(`/api/connections/${id}/sync-photos`,{method:'POST',body:{force:false}});toast('Sincronização retomada')}catch(e){toast(e.message,true);resume.disabled=false}};
+}
+async function syncContactPhotos(id){
+  if(!confirm('Sincronizar agora as fotos de perfil dos contatos desta conexão?\n\nA sincronização usa modo seguro e pode ser pausada/retomada. Mensagens e atendimento sempre têm prioridade sobre a busca de fotos.'))return;
+  try{
+    showModal('Fotos dos contatos','<p><b>Preparando sincronização...</b></p><p class="muted small">O Balbino Chat prioriza o atendimento. A busca de fotos desacelera, pausa em caso de instabilidade e nunca deve bloquear novas mensagens.</p>');
+    await api(`/api/connections/${id}/sync-photos`,{method:'POST',body:{force:false}});
+    let stopped=false,lastProcessed=-1,lastChange=Date.now();
+    const timer=setInterval(async()=>{
+      if(stopped||!$('#modal').classList.contains('show')){clearInterval(timer);return}
+      try{
+        const d=await api(`/api/connections/${id}/sync-photos`),a=d.avatarSync||{};
+        const current=Number(a.processed||0);if(current!==lastProcessed){lastProcessed=current;lastChange=Date.now()}
+        if(['RUNNING','CANCEL_REQUESTED'].includes(a.status)&&Date.now()-lastChange>45000){a.note='Nenhum avanço há mais de 45 segundos. Você pode pausar e retomar; o progresso já feito será preservado.'}
+        $('#modalBody').innerHTML=avatarSyncHtml(id,a);bindAvatarSyncActions(id);
+        if(['COMPLETED','CANCELLED','INTERRUPTED','ERROR'].includes(a.status)){clearInterval(timer);await loadConnections();scheduleConversationRefresh(40);if($('#crm').classList.contains('active'))await loadContacts()}
+      }catch(e){clearInterval(timer);toast(e.message,true)}
+    },1000);
+  }catch(e){toast(e.message,true)}
+}
+
+async function cancelSyncWhatsApp(id){
+  if(!confirm('Cancelar a sincronização agora? A conexão normal do WhatsApp será restaurada automaticamente.'))return;
+  try{await api(`/api/connections/${id}/sync/cancel`,{method:'POST'});toast('Sincronização cancelada. Restaurando conexão...');hideModal();await loadConnections()}
+  catch(e){toast(e.message,true)}
+}
+function syncProgressHtml(sync={}){
+  const status=sync.status||'IDLE';
+  const pct=Number(sync.progress||0);
+  const label={STARTING:'Preparando',WAITING_PHONE:'Aguardando WhatsApp',RECEIVING:'Recebendo histórico',COMPLETED:'Concluída',PARTIAL:'Concluída parcialmente',NO_DATA:'Sem novos dados',ERROR:'Falha',CANCELLED:'Cancelada',INTERRUPTED:'Interrompida'}[status]||status;
+  return `<div class="sync-panel"><p><b>Estado:</b> ${esc(label)}</p><div style="height:9px;background:var(--panel3);border-radius:999px;overflow:hidden"><div style="height:100%;width:${Math.max(3,Math.min(100,pct||3))}%;background:var(--accent)"></div></div><div class="grid cols-2" style="margin-top:12px"><div class="card pad"><div class="small muted">Contatos</div><b style="font-size:22px">${Number(sync.contacts||0)}</b></div><div class="card pad"><div class="small muted">Conversas</div><b style="font-size:22px">${Number(sync.conversations||0)}</b></div><div class="card pad"><div class="small muted">Mensagens</div><b style="font-size:22px">${Number(sync.messages||0)}</b></div><div class="card pad"><div class="small muted">Duplicadas ignoradas</div><b style="font-size:22px">${Number(sync.duplicates||0)}</b></div></div>${sync.note?`<p class="muted small">${esc(sync.note)}</p>`:''}${sync.error?`<p style="color:var(--danger)">${esc(sync.error)}</p>`:''}<p class="muted small">O WhatsApp decide quanto histórico disponibiliza ao dispositivo vinculado. A importação não marca mensagens antigas como não lidas e não aciona automações.</p></div>`;
+}
+function showSyncProgress(id,sync={}){
+  showModal('Sincronização do WhatsApp',syncProgressHtml(sync));
+  let tries=0;
+  const timer=setInterval(async()=>{
+    if(!$('#modal').classList.contains('show')){clearInterval(timer);return}
+    try{
+      const d=await api(`/api/connections/${id}/sync`);$('#modalBody').innerHTML=syncProgressHtml(d.sync);tries++;
+      if(['COMPLETED','PARTIAL','NO_DATA','ERROR','CANCELLED','INTERRUPTED'].includes(d.sync?.status)||tries>90){clearInterval(timer);await loadConnections();if(['COMPLETED','PARTIAL'].includes(d.sync?.status))await loadConversations($('#convSearch')?.value||'')}
+    }catch{clearInterval(timer)}
+  },1500);
+}
+function newConnection(){showModal('Nova conexão',`<label class="small muted">Nome</label><input class="input" id="connName" placeholder="Ex.: Financeiro"><label class="small muted">ID técnico</label><input class="input" id="connId" placeholder="financeiro"><button class="btn primary" id="connSave" style="margin-top:9px">Criar</button>`);$('#connSave').onclick=async()=>{await api('/api/connections',{method:'POST',body:{name:$('#connName').value,id:$('#connId').value}});hideModal();toast('Instância criada');loadConnections()}}
+
+async function loadAccessCatalog({silent=false}={}){
+  try{
+    const cat=await api('/api/access/catalog');
+    state.accessCatalog={connections:cat.connections||[],groups:cat.groups||[],departments:cat.departments||[],loaded:true,error:null,generatedAt:cat.generatedAt||Date.now()};
+  }catch(primaryError){
+    try{
+      const team=await api('/api/team');
+      let connections=team.connections||[],groups=team.groups||[],departments=team.departments||[];
+      if(!connections.length){try{connections=(await api('/api/connections')).map(c=>({id:c.id,name:c.name||c.phone||c.id,phone:c.phone||'',state:c.state}))}catch{}}
+      if(!groups.length){try{const d=await api('/api/groups-channels?type=GROUP&_='+Date.now()),valid=new Set((connections||[]).map(c=>String(c.id))),seen=new Map();for(const g of d.rows||[]){if(!valid.has(String(g.instanceId)))continue;const key=String(g.jid||g.contact?.whatsappJid||g.id||'').toLowerCase();if(!key||seen.has(key))continue;seen.set(key,{id:g.id,subject:g.name||g.subject||'Grupo WhatsApp',instanceId:g.instanceId,size:Number(g.size||0),jid:g.jid||g.contact?.whatsappJid||'',aliases:[g.id,g.jid].filter(Boolean)})}groups=[...seen.values()]}catch{}}
+      state.accessCatalog={connections,groups,departments,loaded:true,error:null,generatedAt:Date.now(),fallback:true};
+      if(!silent)toast(`Acessos atualizados: ${connections.length} conexão(ões) e ${groups.length} grupo(s)`);
+    }catch(fallbackError){
+      state.accessCatalog={...(state.accessCatalog||{}),loaded:false,error:fallbackError.message};
+      if(!silent)toast('Não foi possível atualizar conexões e grupos: '+fallbackError.message,true);
+      throw fallbackError;
+    }
+  }
+  state.team.connections=state.accessCatalog.connections||[];state.team.groups=state.accessCatalog.groups||[];
+  if(!silent&&!state.accessCatalog.fallback)toast(`Acessos atualizados: ${state.accessCatalog.connections.length} conexão(ões) e ${state.accessCatalog.groups.length} grupo(s)`);
+  return state.accessCatalog;
+}
+async function syncAccessCatalog(){
+  const btn=$('#syncGroupAccess');if(btn)btn.disabled=true;
+  try{
+    let d=null;
+    try{d=await api('/api/access/catalog/sync',{method:'POST',body:{}})}catch(primaryError){
+      let connections=[];try{connections=await api('/api/connections')}catch{}
+      const targets=(connections||[]).filter(c=>c.state==='CONNECTED'||c.state==='RECONNECTING');
+      const results=[];
+      for(const c of targets){try{const r=await api('/api/groups/sync',{method:'POST',body:{instanceId:c.id}});results.push({instanceId:c.id,ok:true,groups:Number(r.groups||r.count||0)})}catch(e){results.push({instanceId:c.id,ok:false,error:e.message})}}
+      await loadAccessCatalog({silent:true});d={results,catalog:state.accessCatalog};
+    }
+    const cat=d.catalog||state.accessCatalog||{};state.accessCatalog={connections:cat.connections||[],groups:cat.groups||[],departments:cat.departments||state.team.departments||[],loaded:true,error:null,generatedAt:cat.generatedAt||Date.now(),fallback:cat.fallback===true};state.team.connections=state.accessCatalog.connections;state.team.groups=state.accessCatalog.groups;renderGroupAccessCenter();
+    const ok=(d.results||[]).filter(x=>x.ok).length,fail=(d.results||[]).filter(x=>!x.ok);
+    if(!(d.results||[]).length)toast('Nenhuma conexão conectada disponível para sincronizar grupos.',true);else toast(fail.length?`Sincronização concluída em ${ok} conexão(ões); ${fail.length} falhou(aram).`:`Grupos sincronizados em ${ok} conexão(ões).`,Boolean(fail.length&&!ok));
+  }catch(e){toast(e.message,true)}finally{if(btn)btn.disabled=false}
+}
+async function refreshAccessCatalog(){const btn=$('#refreshGroupAccess');if(btn)btn.disabled=true;try{await loadAccessCatalog();renderGroupAccessCenter()}catch{}finally{if(btn)btn.disabled=false}}
+async function loadTeam(){
+  state.team=await api('/api/team');updateTop();
+  state.accessCatalog={connections:state.team.connections||[],groups:state.team.groups||[],departments:state.team.departments||[],loaded:true,error:null,generatedAt:state.team.accessCatalog?.generatedAt||Date.now()};
+  $('#usersBox').innerHTML=`<table class="table"><tr><th>Nome</th><th>Perfil</th><th>Acessos</th><th></th></tr>${state.team.users.map(u=>{const a=u.access||{},conn=a.allConnections!==false?'Todas':(a.connectionIds||[]).length,dep=a.allDepartments!==false?'Todas':(a.departmentIds||[]).length,grp=a.allGroups!==false?'Todos':(a.groupIds||[]).length;return`<tr><td>${esc(u.name)}</td><td>${esc(ptLabel(u.role))}</td><td><div class="small">Conexões: <b>${conn}</b> • Filas: <b>${dep}</b> • Grupos: <b>${grp}</b></div></td><td><button class="btn small edit-user" data-id="${u.id}">Editar acessos</button></td></tr>`}).join('')}</table>`;
+  $('#deptBox').innerHTML=`<table class="table"><tr><th>Fila / setor</th><th>Forma de distribuição</th><th></th></tr>${state.team.departments.map(d=>`<tr><td><b>${esc(d.name)}</b><div class="small muted">Identificação exibida nos atendimentos</div></td><td><b>${esc(ptLabel(d.distribution))}</b><div class="small muted">${d.distribution==='ROUND_ROBIN'?'Entrega os novos atendimentos em rodízio entre os atendentes disponíveis.':'Prioriza o atendente com menos conversas em andamento.'}</div></td><td><button class="btn small edit-dept" data-id="${d.id}">Editar</button></td></tr>`).join('')}</table>`;
+  renderGroupAccessCenter();$$('.edit-user').forEach(b=>b.onclick=()=>userForm(state.team.users.find(x=>x.id===b.dataset.id)));$$('.edit-dept').forEach(b=>b.onclick=()=>departmentForm(state.team.departments.find(x=>x.id===b.dataset.id)));
+  if($('#refreshGroupAccess'))$('#refreshGroupAccess').onclick=refreshAccessCatalog;if($('#syncGroupAccess'))$('#syncGroupAccess').onclick=syncAccessCatalog;
+}
+function accessItemSelected(item,selected=[]){const set=new Set(selected||[]),keys=[item.id,...(item.aliases||[])].filter(Boolean);return keys.some(k=>set.has(k))}
+function accessCheckList(items,selected,name,labelFn,emptyText='Nenhum item encontrado.'){return items.length?items.map(item=>`<label class="access-check"><input type="checkbox" name="${name}" value="${item.id}" ${accessItemSelected(item,selected)?'checked':''}><span>${esc(labelFn(item))}</span></label>`).join(''):`<div class="access-empty"><b>${esc(emptyText)}</b><span>Use “Atualizar conexões e grupos” antes de salvar restrições.</span></div>`}
+function userForm(x=null){
+  const access=x?.access||{},allConnections=access.allConnections!==false,allDepartments=access.allDepartments!==false,allGroups=access.allGroups!==false;
+  showModal(x?'Editar usuário e acessos':'Novo usuário',`<label class="small muted">Nome</label><input class="input" id="uName" value="${esc(x?.name||'')}"><label class="small muted">Usuário</label><input class="input" id="uLogin" value="${esc(x?.username||'')}"><label class="small muted">Perfil</label><select class="input" id="uRole">${['SUPER_ADMIN','SUPERVISOR','AGENT'].map(r=>`<option value="${r}" ${x?.role===r?'selected':''}>${esc(ptLabel(r))}</option>`).join('')}</select><label class="small muted">Fila / setor principal</label><select class="input" id="uDept"><option value="">Sem setor principal</option>${state.team.departments.map(d=>`<option value="${d.id}" ${x?.departmentId===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select><div class="access-toolbar"><div><b>Permissões operacionais</b><div class="small muted" id="accessCatalogStatus">Catálogo carregado: ${(state.accessCatalog.connections||[]).length} conexão(ões) • ${(state.accessCatalog.groups||[]).length} grupo(s)</div></div><button class="btn small" type="button" id="uRefreshAccess">↻ Atualizar conexões e grupos</button></div><div class="access-grid"><div class="access-card"><div class="access-title">Conexões WhatsApp</div><label class="access-all"><input type="checkbox" id="uAllConnections" ${allConnections?'checked':''}> Liberar todas as conexões</label><div class="access-items" id="uConnections"></div></div><div class="access-card"><div class="access-title">Filas / setores</div><label class="access-all"><input type="checkbox" id="uAllDepartments" ${allDepartments?'checked':''}> Liberar todas as filas</label><div class="access-items" id="uDepartments"></div></div><div class="access-card"><div class="access-title">Central de Grupos</div><label class="access-all"><input type="checkbox" id="uAllGroups" ${allGroups?'checked':''}> Liberar todos os grupos</label><div class="access-items" id="uGroups"></div></div></div><label class="small muted">Situação</label><select class="input" id="uStatus">${['ONLINE','OFFLINE','AWAY'].map(st=>`<option value="${st}" ${x?.status===st?'selected':''}>${esc(ptLabel(st))}</option>`).join('')}</select><label class="small muted">Senha ${x?'(deixe em branco para manter)':'inicial'}</label><input class="input" id="uPassword" type="password" placeholder="${x?'Nova senha opcional':'mínimo de 12 caracteres'}"><button class="btn primary" id="uSave" style="margin-top:9px">Salvar usuário e acessos</button>${x&&x.id!=='u-admin'?` <button class="btn danger" id="uDelete" style="margin-top:9px">Excluir</button>`:''}`);
+  const selectedFromDom=(name,fallback)=>{const els=$$(`input[name="${name}"]`);return els.length?els.filter(i=>i.checked).map(i=>i.value):[...(fallback||[])]};
+  const syncToggle=(master,box)=>{const disabled=$(master).checked;$$(box+' input').forEach(i=>i.disabled=disabled);document.querySelector(box)?.classList.toggle('access-disabled',disabled)};
+  const renderLists=(sel={})=>{const connections=state.accessCatalog.connections||[],groups=state.accessCatalog.groups||[];$('#uConnections').innerHTML=accessCheckList(connections,sel.connections??access.connectionIds??[],'uConn',c=>`${c.name}${c.phone?' • '+c.phone:''}`,'Nenhuma conexão foi localizada.');$('#uDepartments').innerHTML=accessCheckList(state.team.departments||[],sel.departments??access.departmentIds??[],'uDep',d=>d.name,'Nenhuma fila/setor cadastrado.');$('#uGroups').innerHTML=accessCheckList(groups,sel.groups??access.groupIds??[],'uGroup',g=>`${g.subject} • ${(state.accessCatalog.connections||[]).find(c=>c.id===g.instanceId)?.name||g.instanceId}${g.size?` • ${g.size} participantes`:''}`,'Nenhum grupo foi localizado.');syncToggle('#uAllConnections','#uConnections');syncToggle('#uAllDepartments','#uDepartments');syncToggle('#uAllGroups','#uGroups');const st=$('#accessCatalogStatus');if(st)st.textContent=`Catálogo carregado: ${connections.length} conexão(ões) • ${groups.length} grupo(s)`};
+  renderLists();
+  ['#uAllConnections','#uAllDepartments','#uAllGroups'].forEach((master,i)=>{const boxes=['#uConnections','#uDepartments','#uGroups'];$(master).onchange=()=>syncToggle(master,boxes[i])});
+  $('#uRefreshAccess').onclick=async()=>{const btn=$('#uRefreshAccess');btn.disabled=true;const sel={connections:selectedFromDom('uConn',access.connectionIds),departments:selectedFromDom('uDep',access.departmentIds),groups:selectedFromDom('uGroup',access.groupIds)};try{await loadAccessCatalog();renderLists(sel)}catch{}finally{btn.disabled=false}};
+  $('#uSave').onclick=async()=>{const chosenPassword=$('#uPassword').value;if((!x||chosenPassword)&&chosenPassword.length<12)return toast('A senha deve ter pelo menos 12 caracteres.',true);const vals=n=>$$(`input[name="${n}"]:checked`).map(i=>i.value),allConn=$('#uAllConnections').checked,allGrp=$('#uAllGroups').checked,connVals=vals('uConn'),grpVals=vals('uGroup');if(!state.accessCatalog.loaded&&(!allConn||!allGrp))return toast('Não foi possível validar conexões/grupos. Atualize o catálogo antes de salvar restrições.',true);if(!allConn&&!(state.accessCatalog.connections||[]).length)return toast('As conexões não foram carregadas. Marque “Liberar todas as conexões” ou atualize o catálogo.',true);if(!allGrp&&!(state.accessCatalog.groups||[]).length)return toast('Os grupos não foram carregados. Marque “Liberar todos os grupos” ou atualize o catálogo.',true);if(!allConn&&!connVals.length&&!confirm('Este usuário ficará sem acesso a nenhuma conexão WhatsApp. Deseja continuar?'))return;if(!allGrp&&!grpVals.length&&!confirm('Este usuário ficará sem acesso a nenhum grupo. Deseja continuar?'))return;const payload={name:$('#uName').value,username:$('#uLogin').value,role:$('#uRole').value,departmentId:$('#uDept').value||null,status:$('#uStatus').value,access:{allConnections:allConn,connectionIds:connVals,allDepartments:$('#uAllDepartments').checked,departmentIds:vals('uDep'),allGroups:allGrp,groupIds:grpVals}};if($('#uPassword').value)payload.password=$('#uPassword').value;if(x)await api(`/api/users/${x.id}`,{method:'PATCH',body:payload});else await api('/api/users',{method:'POST',body:payload});hideModal();toast('Usuário e permissões salvos');loadTeam()};if($('#uDelete'))$('#uDelete').onclick=async()=>{await api(`/api/users/${x.id}`,{method:'DELETE'});hideModal();loadTeam()}
+}
+function renderGroupAccessCenter(){const box=$('#groupAccessCenter');if(!box)return;const groups=state.accessCatalog.groups||state.team.groups||[],users=state.team.users.filter(u=>u.active!==false&&u.role!=='SUPER_ADMIN'),connections=state.accessCatalog.connections||state.team.connections||[];box.innerHTML=groups.length?`<table class="table"><tr><th>Grupo</th><th>Conexão</th><th>Usuários liberados</th><th></th></tr>${groups.map(g=>{const allowed=users.filter(u=>{const a=u.access||{};return a.allGroups!==false||accessItemSelected(g,a.groupIds||[])});return`<tr><td><b>${esc(g.subject)}</b><div class="small muted">${Number(g.size||0)} participantes${g.synced===false?' • identificado pelo histórico':''}</div></td><td>${esc(connections.find(c=>c.id===g.instanceId)?.name||g.instanceId)}</td><td>${allowed.length?allowed.map(u=>`<span class="chip">${esc(u.name)}</span>`).join(' '):'<span class="muted">Nenhum</span>'}</td><td><button class="btn small group-access-edit" data-id="${g.id}">Gerenciar</button></td></tr>`}).join('')}</table>`:'<div class="access-center-empty"><b>Nenhum grupo localizado.</b><span>Clique em “Atualizar conexões e grupos”. Se necessário, use “Sincronizar grupos” com o WhatsApp conectado.</span></div>';$$('.group-access-edit').forEach(b=>b.onclick=()=>groupAccessModal(b.dataset.id))}
+function groupAccessModal(groupId){const g=(state.accessCatalog.groups||state.team.groups||[]).find(x=>x.id===groupId),users=state.team.users.filter(u=>u.active!==false&&u.role!=='SUPER_ADMIN');showModal(`Acesso ao grupo • ${esc(g?.subject||'Grupo')}`,`<div class="small muted" style="margin-bottom:10px">Escolha quem poderá visualizar e responder neste grupo, independentemente de quem assumiu outros atendimentos.</div><div class="access-items">${users.map(u=>{const a=u.access||{},checked=a.allGroups!==false||accessItemSelected(g,a.groupIds||[]);return`<label class="access-check"><input type="checkbox" class="ga-user" value="${u.id}" ${checked?'checked':''}><span>${esc(u.name)} <small>${esc(ptLabel(u.role))}</small></span></label>`}).join('')}</div><button class="btn primary" id="gaSave" style="margin-top:10px">Salvar acessos do grupo</button>`);$('#gaSave').onclick=async()=>{const selected=new Set($$('.ga-user:checked').map(i=>i.value)),catalog=state.accessCatalog.groups||[];for(const u of users){const a={...(u.access||{})};if(a.allGroups!==false){a.allGroups=false;a.groupIds=catalog.map(x=>x.id)}a.groupIds=[...(a.groupIds||[])].filter(Boolean);if(selected.has(u.id)){if(!a.groupIds.includes(groupId))a.groupIds.push(groupId)}else{const aliases=new Set([groupId,...(g?.aliases||[])]);a.groupIds=a.groupIds.filter(id=>!aliases.has(id))}await api(`/api/users/${u.id}`,{method:'PATCH',body:{access:a}})}hideModal();toast('Acessos do grupo atualizados');loadTeam()}}
+function departmentForm(x=null){showModal(x?'Editar fila / setor':'Nova fila / setor',`<label class="small muted">Nome da fila / setor</label><input class="input" id="dName" value="${esc(x?.name||'')}" placeholder="Ex.: Pedagógico, Comercial, Financeiro"><div class="small muted" style="margin-top:5px">Este nome aparecerá nos cards das conversas, no cabeçalho do atendimento, nas transferências e nos relatórios.</div><label class="small muted" style="display:block;margin-top:9px">Forma de distribuição</label><select class="input" id="dDist"><option value="ROUND_ROBIN" ${x?.distribution==='ROUND_ROBIN'?'selected':''}>Rodízio entre atendentes</option><option value="LEAST_BUSY" ${x?.distribution==='LEAST_BUSY'?'selected':''}>Menor carga de atendimentos</option></select><div class="small muted" style="margin-top:6px"><b>Rodízio:</b> alterna os novos atendimentos entre a equipe. <b>Menor carga:</b> prioriza quem estiver com menos conversas em andamento.</div><button class="btn primary" id="dSave" style="margin-top:9px">Salvar fila / setor</button>${x?` <button class="btn danger" id="dDelete" style="margin-top:9px">Excluir</button>`:''}`);$('#dSave').onclick=async()=>{const payload={name:$('#dName').value.trim(),distribution:$('#dDist').value};if(!payload.name)return toast('Informe o nome da fila / setor.',true);if(x)await api(`/api/departments/${x.id}`,{method:'PATCH',body:payload});else await api('/api/departments',{method:'POST',body:payload});hideModal();toast('Fila / setor salvo');loadTeam()};if($('#dDelete'))$('#dDelete').onclick=async()=>{try{await api(`/api/departments/${x.id}`,{method:'DELETE'});hideModal();loadTeam()}catch(e){toast(e.message,true)}}}
+
+async function loadApiTools(){const[keys,hooks]=await Promise.all([api('/api/api-keys'),api('/api/webhooks')]);$('#apiKeysBox').innerHTML=keys.length?`<table class="table"><tr><th>Nome</th><th>Prefixo</th><th>Último uso</th><th></th></tr>${keys.map(k=>`<tr><td>${esc(k.name)}</td><td><code>${esc(k.prefix)}</code></td><td>${fmtDate(k.lastUsedAt)}</td><td><button class="btn small danger del-key" data-id="${k.id}">Revogar</button></td></tr>`).join('')}</table>`:'<p class="muted">Nenhuma chave criada.</p>';$('#webhooksBox').innerHTML=hooks.length?`<table class="table"><tr><th>Nome</th><th>Eventos</th><th>Situação</th><th></th></tr>${hooks.map(h=>`<tr><td>${esc(h.name)}<div class="small muted">${esc(h.url)}</div></td><td>${esc((h.events||[]).join(', '))}</td><td>${h.lastStatus?`HTTP ${h.lastStatus}`:'—'}</td><td><button class="btn small test-hook" data-id="${h.id}">Testar</button> <button class="btn small danger del-hook" data-id="${h.id}">Excluir</button></td></tr>`).join('')}</table>`:'<p class="muted">Nenhum webhook configurado.</p>';$$('.del-key').forEach(b=>b.onclick=async()=>{await api(`/api/api-keys/${b.dataset.id}`,{method:'DELETE'});loadApiTools()});$$('.del-hook').forEach(b=>b.onclick=async()=>{await api(`/api/webhooks/${b.dataset.id}`,{method:'DELETE'});loadApiTools()});$$('.test-hook').forEach(b=>b.onclick=async()=>{const d=await api(`/api/webhooks/${b.dataset.id}/test`,{method:'POST'});toast(d.lastStatus?`Webhook respondeu HTTP ${d.lastStatus}`:(d.lastError||'Teste concluído'),!d.lastStatus)})}
+function newApiKey(){showModal('Nova chave de API',`<label class="small muted">Nome da integração</label><input class="input" id="keyName" value="Integração de apresentação"><button class="btn primary" id="keySave" style="margin-top:9px">Gerar chave</button>`);$('#keySave').onclick=async()=>{const d=await api('/api/api-keys',{method:'POST',body:{name:$('#keyName').value}});$('#modalBody').innerHTML=`<p>Chave criada. Copie agora; ela não será exibida novamente.</p><div class="code" id="newToken">${esc(d.token)}</div><button class="btn" id="copyToken" style="margin-top:8px">Copiar</button>`;$('#copyToken').onclick=()=>navigator.clipboard.writeText(d.token).then(()=>toast('Chave copiada'))}}
+function newWebhook(){showModal('Nova integração por webhook',`<label class="small muted">Nome</label><input class="input" id="whName" value="Minha integração"><label class="small muted">URL</label><input class="input" id="whUrl" placeholder="https://seusistema.com/webhook"><label class="small muted">Eventos (vírgula)</label><input class="input" id="whEvents" value="message.received,conversation.updated"><label class="small muted">Segredo opcional</label><input class="input" id="whSecret"><button class="btn primary" id="whSave" style="margin-top:9px">Salvar</button>`);$('#whSave').onclick=async()=>{try{await api('/api/webhooks',{method:'POST',body:{name:$('#whName').value,url:$('#whUrl').value,events:$('#whEvents').value.split(',').map(x=>x.trim()).filter(Boolean),secret:$('#whSecret').value}});hideModal();loadApiTools()}catch(e){toast(e.message,true)}}}
+
+async function loadLogs(){const logs=await api('/api/logs');$('#logBox').textContent=logs.map(l=>`${new Date(l.createdAt).toLocaleTimeString('pt-BR')}  ${l.event.padEnd(32)} ${JSON.stringify(l.data)}`).join('\n')||'Sem registros.'}
+function flowUid(prefix='etapa'){return `${prefix}_${Math.random().toString(36).slice(2,8)}`}
+function queueFlowStudentCampusModel(){
+  const deps=(state.team?.departments||[]).filter(d=>d.active!==false),norm=v=>String(v||'').toLocaleLowerCase('pt-BR').normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const findDept=(...names)=>deps.find(d=>names.some(n=>norm(d.name).includes(norm(n))))?.id||deps[0]?.id||null;
+  const pedagogico=findDept('pedagogico','suporte'),comercial=findDept('comercial');
+  const polos=['BATATAIS','FRANCA','ITAPIRA','ITUVERAVA','MOGI GUAÇU','MOGI MIRIM','MONTE SIÃO','RIBEIRÃO PRETO - IPIRANGA','SÃO JOAQUIM DA BARRA'];
+  return [
+    {id:'perfil',title:'Olá, seja bem-vindo! Por favor, selecione a opção desejada:',interaction:'BUTTONS',captureKey:'perfil',options:[
+      {id:'ja_sou_aluno',label:'Já sou aluno',value:'ALUNO',nextNodeId:'polo_aluno'},
+      {id:'quero_ser_aluno',label:'Quero ser aluno',value:'QUERO_SER_ALUNO',departmentId:comercial}
+    ]},
+    {id:'polo_aluno',title:'Olá, seja bem-vindo ao setor Pedagógico. Selecione o seu polo:',interaction:'LIST',captureKey:'polo',options:polos.map((p,i)=>({id:`polo_${i+1}`,label:p,value:p,departmentId:pedagogico}))}
+  ];
+}
+function syncFlowDraftFromDom(){
+  const cards=$$('#queueFlowNodes .flow-node');if(!cards.length)return state.queueFlowDraft||[];
+  state.queueFlowDraft=cards.map(card=>{const id=card.querySelector('.flow-node-id').value.trim(),options=[...card.querySelectorAll('.flow-option-row')].map(row=>{const action=row.querySelector('.flow-action').value,target=row.querySelector('.flow-target').value,label=row.querySelector('.flow-option-label').value.trim();return{id:row.querySelector('.flow-option-id').value.trim()||flowUid('opcao'),label,value:row.querySelector('.flow-option-value').value.trim()||label,afterMessage:row.querySelector('.flow-option-after-message')?.value.trim()||'',nextNodeId:action==='NEXT'?target:null,departmentId:action==='DEPT'?target:null,...pendAutoCampos(row.querySelector('.flow-option-pendencia')?.value||'')}}).filter(o=>o.label);return{id,title:card.querySelector('.flow-node-title').value.trim(),interaction:card.querySelector('.flow-node-interaction').value,captureKey:card.querySelector('.flow-node-capture').value.trim(),options}}).filter(n=>n.id&&n.title);
+  return state.queueFlowDraft;
+}
+function flowTargetOptions(action,currentValue=''){
+  if(action==='NEXT')return (state.queueFlowDraft||[]).map(n=>`<option value="${esc(n.id)}" ${n.id===currentValue?'selected':''}>${esc(n.title||n.id)}</option>`).join('')||'<option value="">Nenhuma etapa</option>';
+  if(action==='DEPT')return (state.team?.departments||[]).filter(d=>d.active!==false).map(d=>`<option value="${esc(d.id)}" ${d.id===currentValue?'selected':''}>${esc(d.name)}</option>`).join('')||'<option value="">Nenhum setor</option>';
+  return '<option value="">Fila geral</option>';
+}
+function flowOptionLooksInverted(option={}){const label=String(option.label||'').trim(),value=String(option.value||'').trim();return !option.afterMessage&&label.length>=32&&value.length>0&&value.length<=32&&/^[A-ZÀ-Ú0-9 _-]+$/u.test(value)}
+function flowOptionRow(option={}){const action=option.nextNodeId?'NEXT':option.departmentId?'DEPT':'SHARED',target=option.nextNodeId||option.departmentId||'',looksInverted=flowOptionLooksInverted(option);return `<div class="flow-option-row ${looksInverted?'flow-option-warning':''}"><div class="flow-field"><label class="small muted">Opção exibida ao contato</label><input class="input flow-option-label" value="${esc(option.label||'')}" placeholder="Ex.: ACADÊMICO"></div><div class="flow-field"><label class="small muted">Valor salvo no CRM</label><input class="input flow-option-value" value="${esc(option.value||option.label||'')}" placeholder="Ex.: ACADEMICO"></div><div class="flow-field"><label class="small muted">Ação</label><select class="input flow-action"><option value="NEXT" ${action==='NEXT'?'selected':''}>Próxima etapa</option><option value="DEPT" ${action==='DEPT'?'selected':''}>Enviar para fila/setor</option><option value="SHARED" ${action==='SHARED'?'selected':''}>Fila geral</option></select></div><div class="flow-field"><label class="small muted">Destino</label><select class="input flow-target">${flowTargetOptions(action,target)}</select></div><input type="hidden" class="flow-option-id" value="${esc(option.id||flowUid('opcao'))}"><div class="flow-option-actions"><button class="btn small danger remove-flow-option" type="button">Remover</button>${looksInverted?'<button class="btn small fix-flow-option" type="button">Corrigir campos</button>':''}</div><div class="flow-field"><label class="small muted">Automático</label><select class="input flow-option-pendencia">${pendTipoOptions(pendAutoValor(option))}</select></div><div class="flow-option-after"><label class="small muted">Mensagem após a escolha (opcional — com pendência, substitui o pedido de descrição)</label><textarea class="input flow-option-after-message" rows="2" placeholder="Mensagem enviada depois que o contato selecionar esta opção. Em uma opção final, ela substitui a confirmação padrão da fila.">${esc(option.afterMessage||'')}</textarea>${looksInverted?'<div class="small flow-warning-text">Parece que o texto da mensagem foi colocado no campo da opção. Clique em “Corrigir campos” para usar o valor curto como opção e mover o texto para a mensagem após a escolha.</div>':''}</div></div>`}
+function flowNodeCard(node){const overflow=(node.options||[]).length>3;return `<div class="flow-node" data-id="${esc(node.id)}"><div class="flow-node-head"><div><label class="small muted">Pergunta / mensagem</label><input class="input flow-node-title" value="${esc(node.title||'')}"></div><div><label class="small muted">Formato</label><select class="input flow-node-interaction"><option value="AUTO" ${node.interaction==='AUTO'?'selected':''}>Automático</option><option value="BUTTONS" ${node.interaction==='BUTTONS'?'selected':''}>Botões rápidos</option><option value="LIST" ${node.interaction==='LIST'?'selected':''}>Lista</option><option value="TEXT" ${node.interaction==='TEXT'?'selected':''}>Texto por nome</option></select>${overflow?`<div class="small flow-warning-text">${(node.options||[]).length} opções: o WhatsApp receberá uma lista com todas elas; nenhuma opção será cortada.</div>`:''}</div><div><label class="small muted">Salvar resposta em</label><input class="input flow-node-capture" value="${esc(node.captureKey||'')}" placeholder="Ex.: polo"></div><div><input type="hidden" class="flow-node-id" value="${esc(node.id)}"><button class="btn small danger remove-flow-node" type="button">Excluir etapa</button></div></div><div class="flow-node-body"><div class="small muted" style="margin-bottom:7px">Opções</div><div class="flow-options">${(node.options||[]).map(flowOptionRow).join('')}</div><div class="flow-node-actions"><button class="btn small add-flow-option" type="button">+ Adicionar opção</button></div></div></div>`}
+function updateFlowTargetRow(row){const action=row.querySelector('.flow-action').value,current=row.querySelector('.flow-target').value;row.querySelector('.flow-target').innerHTML=flowTargetOptions(action,current)}
+function bindFlowBuilder(){
+  $$('#queueFlowNodes .flow-action').forEach(el=>el.onchange=()=>{syncFlowDraftFromDom();updateFlowTargetRow(el.closest('.flow-option-row'));refreshFlowPreview()});
+  $$('#queueFlowNodes .remove-flow-option').forEach(b=>b.onclick=()=>{b.closest('.flow-option-row')?.remove();syncFlowDraftFromDom();refreshFlowPreview()});
+  $$('#queueFlowNodes .fix-flow-option').forEach(b=>b.onclick=()=>{const row=b.closest('.flow-option-row'),label=row?.querySelector('.flow-option-label'),value=row?.querySelector('.flow-option-value'),after=row?.querySelector('.flow-option-after-message');if(!row||!label||!value||!after)return;const oldLabel=label.value.trim(),shortValue=value.value.trim();if(!shortValue)return;label.value=shortValue.replaceAll('_',' ');after.value=oldLabel;syncFlowDraftFromDom();renderFlowBuilder();toast('Campos corrigidos. Revise a opção exibida e salve as configurações.')});
+  $$('#queueFlowNodes .add-flow-option').forEach(b=>b.onclick=()=>{syncFlowDraftFromDom();const card=b.closest('.flow-node'),node=state.queueFlowDraft.find(n=>n.id===card.dataset.id);if(node){node.options.push({id:flowUid('opcao'),label:'NOVA OPÇÃO',value:'NOVA_OPCAO'});renderFlowBuilder()}});
+  $$('#queueFlowNodes .remove-flow-node').forEach(b=>b.onclick=()=>{syncFlowDraftFromDom();const id=b.closest('.flow-node').dataset.id;state.queueFlowDraft=state.queueFlowDraft.filter(n=>n.id!==id);for(const n of state.queueFlowDraft)for(const o of n.options)if(o.nextNodeId===id)o.nextNodeId=null;renderFlowBuilder()});
+  $$('#queueFlowNodes input,#queueFlowNodes select,#queueFlowNodes textarea').forEach(el=>{if(!el.classList.contains('flow-action')){el.oninput=refreshFlowPreview;el.onchange=refreshFlowPreview}});
+}
+function renderFlowBuilder(){
+  const box=$('#queueFlowNodes');if(!box)return;state.queueFlowDraft=Array.isArray(state.queueFlowDraft)?state.queueFlowDraft:[];
+  box.innerHTML=state.queueFlowDraft.map(flowNodeCard).join('')||'<div class="muted">Nenhuma etapa criada.</div>';
+  const start=$('#setQueueFlowStart'),current=start?.value||state.settings.queueFlowStartNodeId||state.queueFlowDraft[0]?.id||'';if(start){start.innerHTML=state.queueFlowDraft.map(n=>`<option value="${esc(n.id)}" ${n.id===current?'selected':''}>${esc(n.title)}</option>`).join('')}
+  bindFlowBuilder();refreshFlowPreview();
+}
+function collectQueueFlow(){syncFlowDraftFromDom();return state.queueFlowDraft||[]}
+function refreshFlowPreview(){
+  const el=$('#queueFlowPreview');if(!el)return;syncFlowDraftFromDom();const nodes=state.queueFlowDraft||[],byId=new Map(nodes.map(n=>[n.id,n])),startId=$('#setQueueFlowStart')?.value||nodes[0]?.id;const lines=['Prévia do fluxo (sem menu numérico):'];const seen=new Set();function walk(id,depth=0){if(!id||depth>7||seen.has(`${id}:${depth}`))return;const n=byId.get(id);if(!n)return;seen.add(`${id}:${depth}`);const effective=(n.options||[]).length>3&&n.interaction==='BUTTONS'?'LIST (automático)':(n.interaction==='AUTO'?((n.options||[]).length<=3?'BOTÕES (auto)':'LISTA (auto)'):n.interaction);lines.push(`${'  '.repeat(depth)}▸ ${n.title}  [${effective}]`);for(const o of n.options){const dest=o.nextNodeId?`→ ${byId.get(o.nextNodeId)?.title||o.nextNodeId}`:o.departmentId?`→ fila ${(state.team?.departments||[]).find(d=>d.id===o.departmentId)?.name||o.departmentId}`:'→ fila geral';lines.push(`${'  '.repeat(depth+1)}• ${o.label} ${dest}${o.pendenciaTipoId?` · abre pendência: ${(pendCache.tipos.find(t=>t.id===o.pendenciaTipoId)||{}).name||o.pendenciaTipoId}`:''}${o.faqBot?' · responde pelo FAQ':''}`);if(o.afterMessage)lines.push(`${'  '.repeat(depth+2)}↳ depois envia: ${o.afterMessage}`)}for(const o of n.options)if(o.nextNodeId)walk(o.nextNodeId,depth+1)}walk(startId);el.textContent=lines.join('\n')}
+async function loadQuickRepliesPage(){
+  state.quickReplies=await api('/api/quick-replies');quickSlashCacheAt=Date.now();renderQuickRepliesPage($('#quickRepliesSearch')?.value||'')
+}
+function renderQuickRepliesPage(query=''){
+  const box=$('#quickRepliesPageList'),count=$('#quickRepliesCount');if(!box)return;const needle=safeSearch(query),rows=[...(state.quickReplies||[])].sort((a,b)=>Number(b.favorite)-Number(a.favorite)||String(a.category||'').localeCompare(String(b.category||''),'pt-BR')||String(a.shortcut||'').localeCompare(String(b.shortcut||''),'pt-BR')).filter(q=>!needle||safeSearch(`${q.shortcut||''} ${q.category||''} ${q.text||''} ${state.team.departments.find(d=>d.id===q.departmentId)?.name||''}`).includes(needle));
+  if(count)count.textContent=`${rows.length} resposta${rows.length===1?'':'s'}`;const canManage=['SUPER_ADMIN','SUPERVISOR'].includes(state.me?.role);
+  box.innerHTML=rows.map(q=>`<div class="quick-page-row"><div class="quick-page-shortcut">${q.favorite?'★ ':''}${esc(q.shortcut||'/')}</div><div class="quick-page-category"><span class="quick-category">${esc(q.category||'Geral')}</span>${q.departmentId?` <span class="small muted">${esc(state.team.departments.find(d=>d.id===q.departmentId)?.name||'Fila')}</span>`:' <span class="small muted">Todas as filas</span>'}</div><div class="quick-page-text" title="${esc(q.text||'')}">${esc(q.text||'')}</div><div class="quick-page-actions">${canManage?`<button class="btn small quick-page-edit" data-id="${q.id}">Editar</button><button class="btn small danger quick-page-delete" data-id="${q.id}">Excluir</button>`:''}</div></div>`).join('')||'<div class="quick-page-empty">Nenhuma resposta rápida encontrada.</div>';
+  $$('.quick-page-edit').forEach(b=>b.onclick=()=>quickForm(state.quickReplies.find(x=>x.id===b.dataset.id)));$$('.quick-page-delete').forEach(b=>b.onclick=async()=>{if(!confirm('Excluir esta resposta rápida?'))return;await api(`/api/quick-replies/${b.dataset.id}`,{method:'DELETE'});await loadQuickRepliesPage()});
+  const add=$('#newQuickReplyPage');if(add)add.classList.toggle('hidden',!canManage)
+}
+async function refreshQuickReplyViews(){if($('#quickReplies')?.classList.contains('active'))await loadQuickRepliesPage();else if($('#settings')?.classList.contains('active'))await loadSettings();}
+function openOperationalReset(){
+  showModal('Zerar atendimentos / Criar marco zero',`
+    <div class="operational-reset-warning">
+      <p><b>Isso inicia uma nova operação do zero.</b></p>
+      <p>As conversas atuais deixam de aparecer em Fila, Em atendimento e Todas. Contatos, CRM, usuários, filas, configurações, WhatsApp, respostas rápidas, automações e uploads são preservados.</p>
+      <p>O Balbino cria um backup automático antes da operação. Se um contato antigo escrever novamente, será criado um novo atendimento com novo protocolo.</p>
+      <label class="small muted">Para confirmar, digite <b>ZERAR</b></label>
+      <input class="input" id="operationalResetConfirm" autocomplete="off" placeholder="ZERAR">
+      <div class="modal-action-row"><button class="btn" id="cancelOperationalReset" type="button">Cancelar</button><button class="btn danger" id="confirmOperationalReset" type="button">Zerar atendimentos</button></div>
+    </div>`);
+  $('#cancelOperationalReset').onclick=hideModal;
+  $('#confirmOperationalReset').onclick=async()=>{
+    const confirmText=String($('#operationalResetConfirm').value||'').trim().toUpperCase();
+    if(confirmText!=='ZERAR')return toast('Digite ZERAR para confirmar.',true);
+    const btn=$('#confirmOperationalReset');btn.disabled=true;btn.textContent='Criando marco zero...';
+    try{const r=await api('/api/system/operational-reset',{method:'POST',body:{confirm:'ZERAR'}});hideModal();state.current=null;state.messages=[];state.filter='ALL';state.conversationSubfilter='ALL';toast(`Marco zero criado. ${Number(r.archived||0)} atendimento(s) anterior(es) arquivado(s).`);await loadConversations('');}
+    catch(e){btn.disabled=false;btn.textContent='Zerar atendimentos';toast(e.message||'Não foi possível criar o marco zero.',true)}
+  };
+}
+
+async function loadWelcomeIntegrationConfig(){if(!$('#welcomeIntegrationCard'))return;try{const d=await api('/api/integracao/config'),c=d.config||{},health=d.saude||{};$('#wiEnabled').checked=c.enabled===true;$('#wiConnection').innerHTML=(d.connections||[]).map(x=>`<option value="${esc(x.id)}">${esc(x.name)}${x.phone?` • ${esc(formatConnectionPhone(x.phone))}`:''} (${esc(x.state)})</option>`).join('')||'<option value="principal">WhatsApp principal</option>';$('#wiConnection').value=c.connectionId||'principal';$('#wiDailyLimit').value=Number(c.dailyLimit||25);$('#wiMin').value=Number(c.minIntervalSeconds||60);$('#wiMax').value=Number(c.maxIntervalSeconds||180);$('#wiStart').value=c.start||'08:00';$('#wiEnd').value=c.end||'18:00';$('#wiLanIp').value=c.allowedLanIp||'';$('#wiHealth').textContent=`WhatsApp ${health.conectado?'conectado':'desconectado'}${health.numero?` • ${health.numero}`:''} • ${health.fila||0} na fila • ${health.enviadas_hoje||0}/${health.limite_dia||25} enviadas hoje • ${health.pausado?'pausado: '+(health.motivo_pausa||''): 'fila ativa'}`;$('#wiTokenResult').textContent=c.tokenConfigured?'X-Token configurado. Gere outro somente se precisar trocar o token.':'X-Token ainda não gerado.';$('#wiSaveConfig').onclick=async()=>{try{const x=await api('/api/integracao/config',{method:'POST',body:{enabled:$('#wiEnabled').checked,connectionId:$('#wiConnection').value,dailyLimit:Number($('#wiDailyLimit').value),minIntervalSeconds:Number($('#wiMin').value),maxIntervalSeconds:Number($('#wiMax').value),start:$('#wiStart').value,end:$('#wiEnd').value,allowedLanIp:$('#wiLanIp').value.trim()}});toast('Integração salva.');$('#wiHealth').textContent=`WhatsApp ${x.saude?.conectado?'conectado':'desconectado'} • ${x.saude?.fila||0} na fila • ${x.saude?.enviadas_hoje||0}/${x.saude?.limite_dia||25} enviadas hoje • ${x.saude?.pausado?'pausado':'fila ativa'}`}catch(e){toast(e.message,true)}};$('#wiGenerateToken').onclick=async()=>{if(c.tokenConfigured&&!confirm('Trocar o X-Token invalida o token usado pelos sistemas de Matrículas e Artes. Continuar?'))return;try{const x=await api('/api/integracao/config/token',{method:'POST',body:{}});$('#wiTokenResult').innerHTML=`<b>Novo X-Token (copie agora):</b><br><code>${esc(x.token)}</code> <button class="btn small" id="wiCopyToken" type="button">Copiar</button><br><span class="muted">${esc(x.aviso)}</span>`;$('#wiCopyToken').onclick=async()=>{try{await navigator.clipboard.writeText(x.token);toast('X-Token copiado.')}catch(e){toast('Não foi possível copiar o token neste navegador.',true)}}}catch(e){toast(e.message,true)}};$('#wiPause').onclick=async()=>{try{await api('/api/integracao/config/pausar',{method:'POST',body:{}});toast('Fila pausada.');await loadWelcomeIntegrationConfig()}catch(e){toast(e.message,true)}};$('#wiResume').onclick=async()=>{try{await api('/api/integracao/config/retomar',{method:'POST',body:{}});toast('Fila retomada.');await loadWelcomeIntegrationConfig()}catch(e){toast(e.message,true)}}}catch(e){$('#wiHealth').textContent=e.message}}
+async function loadSettings(){state.settings=await api('/api/settings');$('#setStart').value=state.settings.businessHours?.start||'08:00';$('#setEnd').value=state.settings.businessHours?.end||'18:00';$('#setWelcome').value=state.settings.welcomeMessage||'';$('#setAway').value=state.settings.awayMessage||'';$('#setCsat').value=state.settings.csatMessage||'';if($('#setFarewell'))$('#setFarewell').value=state.settings.farewellMessage||'';if($('#setCloseReason'))$('#setCloseReason').checked=false;$('#setLock').checked=!!state.settings.lockConversation;$('#setAutoAssign').checked=state.settings.autoAssign!==false;$('#setSharedQueue').checked=state.settings.sharedQueueFirstContact!==false;$('#setAutoReplies').checked=state.settings.autoRepliesEnabled!==false;$('#setAutoConnectWhatsApp').checked=state.settings.autoConnectWhatsApp!==false;$('#setSyncGroups').checked=state.settings.syncGroupsOnConnect!==false;$('#setPreserveNames').checked=state.settings.preserveManualContactName!==false;$('#setRetention').value=state.settings.mediaRetentionDays||180;$('#setUpload').value=state.settings.maxUploadMB||55;if($('#setQueueSlaWarning'))$('#setQueueSlaWarning').value=Number(state.settings.queueSlaWarningMinutes||15);if($('#setQueueSlaCritical'))$('#setQueueSlaCritical').value=Number(state.settings.queueSlaCriticalMinutes||30);if($('#setMaxConcurrent'))$('#setMaxConcurrent').value=Number(state.settings.maxConcurrentConversations||0);if($('#setQueueRouting')){$('#setQueueRouting').checked=state.settings.queueRoutingEnabled!==false;$('#setQueueInteractivePreference').value=state.settings.queueInteractivePreference||'AUTO';$('#setQueueFallback').value=state.settings.queueInteractiveFallback||'TEXT_LABELS';$('#setQueueFooter').value=state.settings.queueRoutingFooter||'Balbino Chat';$('#setQueueConfirmation').value=state.settings.queueRoutingConfirmation||'Perfeito! Seu atendimento foi direcionado para {setor}. Aguarde um atendente.';$('#setQueueInvalid').value=state.settings.queueRoutingInvalid||'Não consegui identificar sua escolha. Selecione uma das opções disponíveis:';state.queueFlowDraft=structuredClone(state.settings.queueFlowNodes||[]);renderFlowBuilder();$('#setQueueFlowStart').value=state.settings.queueFlowStartNodeId||state.queueFlowDraft[0]?.id||'';$('#setQueueFlowStart').onchange=refreshFlowPreview;$('#addFlowNode').onclick=()=>{syncFlowDraftFromDom();const id=flowUid('etapa');state.queueFlowDraft.push({id,title:'Nova pergunta',interaction:'AUTO',captureKey:'',options:[{id:flowUid('opcao'),label:'NOVA OPÇÃO',value:'NOVA_OPCAO'}]});renderFlowBuilder()};$('#loadStudentCampusModel').onclick=()=>{if(!confirm('Carregar o modelo SOU ALUNO / NÃO SOU ALUNO + polos? As etapas atuais do fluxo serão substituídas.'))return;state.queueFlowDraft=queueFlowStudentCampusModel();state.settings.queueFlowStartNodeId='perfil';renderFlowBuilder();$('#setQueueFlowStart').value='perfil';refreshFlowPreview()}}state.quickReplies=await api('/api/quick-replies');renderQuickSettings();if($('#operationalResetInfo')){const at=Number(state.settings.operationalResetAt||0);$('#operationalResetInfo').textContent=at?`Último marco zero: ${new Date(at).toLocaleString('pt-BR')}`:'Nenhum marco zero criado.'}await Promise.all([loadSystemInfo(),loadWelcomeIntegrationConfig()])}
+function renderQuickSettings(){$('#quickSettings').innerHTML=state.quickReplies.sort((a,b)=>Number(b.favorite)-Number(a.favorite)).map(q=>`<div style="padding:8px 0;border-bottom:1px solid var(--line)"><div style="display:flex;align-items:center;gap:6px"><b>${q.favorite?'★ ':''}${esc(q.shortcut)}</b><span class="quick-category">${esc(q.category||'Geral')}</span>${q.departmentId?`<span class="small muted">${esc(state.team.departments.find(d=>d.id===q.departmentId)?.name||'Setor')}</span>`:'<span class="small muted">Todos os setores</span>'}</div><div class="muted small" style="margin:4px 0">${esc(q.text)}</div><div><button class="btn small edit-q" data-id="${q.id}">Editar</button> <button class="btn small danger del-q" data-id="${q.id}">Excluir</button></div></div>`).join('')||'<div class="muted">Nenhuma resposta rápida cadastrada.</div>';$$('.edit-q').forEach(b=>b.onclick=()=>quickForm(state.quickReplies.find(x=>x.id===b.dataset.id)));$$('.del-q').forEach(b=>b.onclick=async()=>{await api(`/api/quick-replies/${b.dataset.id}`,{method:'DELETE'});loadSettings()})}
+function quickForm(q=null){showModal(q?'Editar resposta rápida':'Nova resposta rápida',`<div class="grid cols-2"><div><label class="small muted">Atalho</label><input class="input" id="qShortcut" value="${esc(q?.shortcut||'/')}"></div><div><label class="small muted">Categoria</label><input class="input" id="qCategory" value="${esc(q?.category||'Geral')}" placeholder="Ex.: Financeiro"></div></div><label class="small muted">Disponível para setor</label><select class="input" id="qDepartment"><option value="">Todos os setores</option>${state.team.departments.map(d=>`<option value="${d.id}" ${q?.departmentId===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select><label class="small muted" style="display:block;margin-top:8px">Texto</label><textarea class="input" id="qText" style="height:120px">${esc(q?.text||'')}</textarea><div class="small muted" style="margin-top:5px">Variáveis: {nome}, {primeiro_nome}, {telefone}, {empresa}, {polo}, {setor}, {atendente}, {assunto}</div><p><label><input type="checkbox" id="qFavorite" ${q?.favorite?'checked':''}> Marcar como favorita</label></p><button class="btn primary" id="qSave" style="margin-top:9px">Salvar</button>`);$('#qSave').onclick=async()=>{const payload={shortcut:$('#qShortcut').value,text:$('#qText').value,category:$('#qCategory').value,departmentId:$('#qDepartment').value||null,favorite:$('#qFavorite').checked};if(q)await api(`/api/quick-replies/${q.id}`,{method:'PATCH',body:payload});else await api('/api/quick-replies',{method:'POST',body:payload});hideModal();await refreshQuickReplyViews()}}
+
+async function saveSettings(){const payload={businessHours:{start:$('#setStart').value,end:$('#setEnd').value},welcomeMessage:$('#setWelcome').value,awayMessage:$('#setAway').value,csatMessage:$('#setCsat').value,farewellMessage:$('#setFarewell')?.value||'',requireCloseReason:false,lockConversation:$('#setLock').checked,autoAssign:$('#setAutoAssign').checked,sharedQueueFirstContact:$('#setSharedQueue').checked,autoRepliesEnabled:$('#setAutoReplies').checked,autoConnectWhatsApp:$('#setAutoConnectWhatsApp').checked,syncGroupsOnConnect:$('#setSyncGroups').checked,syncChannelsOnConnect:$('#setSyncGroups').checked,preserveManualContactName:$('#setPreserveNames').checked,mediaRetentionDays:Number($('#setRetention').value||180),maxUploadMB:Number($('#setUpload').value||55),queueSlaWarningMinutes:Math.max(1,Number($('#setQueueSlaWarning')?.value||15)),queueSlaCriticalMinutes:Math.max(1,Number($('#setQueueSlaCritical')?.value||30)),maxConcurrentConversations:Math.max(0,Number($('#setMaxConcurrent')?.value||0))};if($('#setQueueRouting')){payload.queueRoutingEnabled=$('#setQueueRouting').checked;payload.queueInteractivePreference=$('#setQueueInteractivePreference').value;payload.queueInteractiveFallback=$('#setQueueFallback').value;payload.queueRoutingFooter=$('#setQueueFooter').value.trim()||'Balbino Chat';payload.queueRoutingConfirmation=$('#setQueueConfirmation').value;payload.queueRoutingInvalid=$('#setQueueInvalid').value;payload.queueFlowNodes=collectQueueFlow();payload.queueFlowStartNodeId=$('#setQueueFlowStart').value||payload.queueFlowNodes[0]?.id||null;if(payload.queueRoutingEnabled&&!payload.queueFlowNodes.length){toast('Crie pelo menos uma etapa para o fluxo de atendimento.',true);return}for(const node of payload.queueFlowNodes){if(!node.options.length){toast(`A etapa “${node.title}” precisa ter pelo menos uma opção.`,true);return}}}await api('/api/settings',{method:'PATCH',body:payload});toast('Configurações salvas');if($('#autoTop')){$('#autoTop').textContent=$('#setAutoReplies').checked?'Automação ON':'Automação OFF';$('#autoTop').style.color=$('#setAutoReplies').checked?'var(--accent)':'var(--muted)'}}
+async function loadSystemInfo(){try{state.systemInfo=await api('/api/system/info');const i=state.systemInfo;const vf=document.querySelector('.sidebar-foot-version');if(vf&&i.version)vf.textContent=`Balbino Chat • v${i.version}`;const urls=(i.network?.urls||[]).map(n=>`<div><b>${esc(n.url)}</b> <span class="small muted">${esc(n.name)}</span></div>`).join('')||'<div>Nenhum endereço LAN detectado.</div>',repair=i.multiConnectionRepair,repairText=repair?.at?`${new Date(repair.at).toLocaleString('pt-BR')} • ${Number(repair.report?.conversationsMerged||0)} conversa(s) consolidada(s) • ${Number(repair.report?.selfNameContactsCleaned||0)+Number(repair.report?.connectedContactsRenamed||0)} identidade(s) corrigida(s)`:'Ainda não executado';$('#systemInfoBox').innerHTML=`<div class="info-row"><b>Servidor</b>${esc(i.hostname)} • ${esc(i.node)}</div><div class="info-row"><b>Banco</b>${esc(i.storage?.engine||'—')} • ${Number(i.storage?.messages||0)} mensagens • ${Number(i.storage?.groups||0)} grupos • ${Number(i.storage?.channels||0)} canais</div><div class="info-row"><b>Computadores conectados</b>${Number(i.clients?.sessions||0)} sessões</div><div class="info-row"><b>Último reparo multiconexão</b>${esc(repairText)}</div><div class="info-row"><b>Endereços para outros computadores</b>${urls}</div>`}catch(e){$('#systemInfoBox').textContent=e.message}}
+async function repairMultiConnection(){if(!confirm('Executar o reparo seguro de multiconexão agora? O histórico não será apagado.'))return;try{const beforeId=state.current?.id||null,d=await api('/api/system/repair-multiconnection',{method:'POST'}),r=d.report||{},redirects=r.conversationRedirects||{};if(beforeId&&redirects[beforeId]){state.current={...(state.current||{}),id:redirects[beforeId]};state.currentLock=null;state.messages=[]}toast(`Reparo concluído: ${Number(r.conversationsMerged||0)} conversa(s) consolidada(s), ${Number(r.selfNameContactsCleaned||0)+Number(r.connectedContactsRenamed||0)} identidade(s) corrigida(s).`);await Promise.all([loadSystemInfo(),loadConversations('',{preserveChat:true})]);if(state.current?.id)await selectConversation(state.current.id)}catch(e){toast(e.message,true)}}
+async function changePassword(){const current=$('#currentPassword').value,next=$('#newPassword').value,confirmValue=$('#confirmPassword').value;if(next.length<8)return toast('A nova senha precisa ter pelo menos 8 caracteres.',true);if(next!==confirmValue)return toast('A confirmação da nova senha não confere.',true);try{await api('/api/auth/change-password',{method:'POST',body:{currentPassword:current,newPassword:next}});$('#currentPassword').value=$('#newPassword').value=$('#confirmPassword').value='';toast('Senha alterada com sucesso.')}catch(e){toast(e.message,true)}}
+
+let searchTimer;async function globalSearch(){const q=$('#globalSearch').value.trim();if(q.length<2)return;const d=await api(`/api/search?q=${encodeURIComponent(q)}`);showModal('Pesquisa global',`<div class="search-results"><b>Contatos</b>${d.contacts.map(c=>`<div class="search-hit global-contact" data-id="${c.id}"><b>${esc(c.name)}</b><div class="small muted">${fmtPhone(c.phone)}</div></div>`).join('')||'<span class="muted">Nenhum</span>'}<b>Conversas</b>${d.conversations.map(c=>`<div class="search-hit global-conv" data-id="${c.id}"><b>${esc(c.contact?.name)}</b><div class="small muted">${esc(c.lastMessage?.body||'')}</div></div>`).join('')||'<span class="muted">Nenhuma</span>'}<b>Mensagens</b>${d.messages.map(m=>`<div class="search-hit global-msg" data-cid="${m.conversationId}">${esc(m.body).slice(0,170)}<div class="small muted">${esc(m.conversation?.contact?.name||'')}</div></div>`).join('')||'<span class="muted">Nenhuma</span>'}</div>`);$$('.global-contact').forEach(x=>x.onclick=()=>{hideModal();nav('crm');setTimeout(()=>{$('#crmSearch').value=q;renderContacts(q)},100)});$$('.global-conv,.global-msg').forEach(x=>x.onclick=async()=>{const id=x.dataset.id||x.dataset.cid;hideModal();state.filter='ALL';nav('inbox');await loadConversations();await selectConversation(id)})}
+
+// ===== v0.8.17 • Filas e Fluxos visuais =====
+async function loadQueuesPage(){
+  state.team=await api('/api/team');updateTop();renderQueuesPage($('#queuePageSearch')?.value||'');
+  if($('#queuePageSearch'))$('#queuePageSearch').oninput=e=>renderQueuesPage(e.target.value);
+  if($('#newQueuePage'))$('#newQueuePage').onclick=()=>queueAdvancedForm();
+}
+function queueHexColor(d,index=0){const palette=['#2563eb','#16a34a','#eab308','#8b5cf6','#06b6d4','#e11d48'];return /^#[0-9a-f]{6}$/i.test(String(d?.color||''))?d.color:palette[index%palette.length]}
+function renderQueuesPage(query=''){
+  const box=$('#queuesPageBox');if(!box)return;const q=safeSearch(query);const rows=(state.team?.departments||[]).filter(d=>!q||safeSearch(`${d.name} ${d.greeting||''}`).includes(q)).sort((a,b)=>(Number(a.order??999)-Number(b.order??999))||String(a.name).localeCompare(String(b.name),'pt-BR'));
+  $('#queuePageCount').textContent=`${rows.length} fila${rows.length===1?'':'s'}`;
+  box.innerHTML=rows.map((d,i)=>`<article class="queue-admin-card" style="--queue-color:${queueHexColor(d,i)}"><div class="queue-admin-color"></div><div class="queue-admin-body"><div class="queue-admin-title"><span class="queue-admin-dot"></span><div><h3>${esc(d.name)}</h3><div class="small muted">Ordem ${Number(d.order??i+1)} • ${d.active===false?'Inativa':'Ativa'}</div></div></div><div class="queue-admin-meta"><span class="pill">${d.distribution==='ROUND_ROBIN'?'Rodízio':'Menor carga'}</span>${d.closeTicket?'<span class="pill">Fecha ticket no fluxo</span>':''}</div><div class="small muted" style="margin-bottom:5px">Mensagem de saudação</div><div class="queue-admin-greeting small">${esc(d.greeting||'Sem mensagem específica. Usa a mensagem padrão do atendimento.')}</div><div class="queue-admin-actions"><button class="btn small queue-edit-page" data-id="${d.id}">Editar fila</button></div></div></article>`).join('')||'<div class="card pad muted">Nenhuma fila encontrada.</div>';
+  $$('.queue-edit-page').forEach(b=>b.onclick=()=>queueAdvancedForm(state.team.departments.find(d=>d.id===b.dataset.id)));
+}
+function queueAdvancedForm(x=null){
+  const color=queueHexColor(x,(state.team?.departments||[]).length),order=x?.order??((state.team?.departments||[]).length+1);
+  showModal(x?'Editar fila de atendimento':'Adicionar fila de atendimento',`<div class="queue-editor-grid"><div><label class="small muted">Nome</label><input class="input" id="qaName" value="${esc(x?.name||'') }" placeholder="Ex.: Pedagógico"></div><div><label class="small muted">Ordem da fila</label><input class="input" id="qaOrder" type="number" min="1" value="${Number(order)}"></div><div class="full"><label class="small muted">Cor de identificação</label><div class="queue-color-row"><input type="color" id="qaColor" value="${color}"><input class="input" id="qaColorText" value="${color}" maxlength="7"></div></div><div><label class="small muted">Distribuição</label><select class="input" id="qaDist"><option value="ROUND_ROBIN" ${x?.distribution==='ROUND_ROBIN'?'selected':''}>Rodízio</option><option value="LEAST_BUSY" ${x?.distribution==='LEAST_BUSY'?'selected':''}>Menor carga</option></select></div><div><label class="small muted">Situação</label><select class="input" id="qaActive"><option value="true" ${x?.active!==false?'selected':''}>Ativa</option><option value="false" ${x?.active===false?'selected':''}>Inativa</option></select></div><div class="full"><label class="small muted">Mensagem de saudação da fila</label><textarea class="input" id="qaGreeting" rows="4" placeholder="Mensagem opcional ao entrar nesta fila">${esc(x?.greeting||'')}</textarea></div><div class="full"><label><input type="checkbox" id="qaCloseTicket" ${x?.closeTicket?'checked':''}> Fechar ticket ao concluir uma ação terminal configurada para esta fila</label></div></div><div class="flow-modal-actions"><div>${x?'<button class="btn danger" id="qaDelete">Excluir fila</button>':''}</div><div><button class="btn" id="qaCancel">Cancelar</button><button class="btn primary" id="qaSave">Salvar fila</button></div></div>`);
+  $('#qaColor').oninput=e=>$('#qaColorText').value=e.target.value;$('#qaColorText').oninput=e=>{if(/^#[0-9a-f]{6}$/i.test(e.target.value))$('#qaColor').value=e.target.value};$('#qaCancel').onclick=hideModal;
+  $('#qaSave').onclick=async()=>{const payload={name:$('#qaName').value.trim(),order:Number($('#qaOrder').value||1),color:$('#qaColorText').value.trim(),distribution:$('#qaDist').value,active:$('#qaActive').value==='true',greeting:$('#qaGreeting').value.trim(),closeTicket:$('#qaCloseTicket').checked};if(!payload.name)return toast('Informe o nome da fila.',true);if(!/^#[0-9a-f]{6}$/i.test(payload.color))return toast('Informe uma cor válida.',true);if(x)await api(`/api/departments/${x.id}`,{method:'PATCH',body:payload});else await api('/api/departments',{method:'POST',body:payload});hideModal();toast('Fila salva');await loadQueuesPage();};
+  if($('#qaDelete'))$('#qaDelete').onclick=async()=>{if(!confirm(`Excluir a fila “${x.name}”?`))return;try{await api(`/api/departments/${x.id}`,{method:'DELETE'});hideModal();toast('Fila excluída');await loadQueuesPage()}catch(e){toast(e.message,true)}};
+}
+function flowDefaultLayout(nodes,startId){
+  const by=new Map(nodes.map(n=>[n.id,n])),depth=new Map(),levels=new Map();const start=by.get(startId)||nodes[0];if(start){const q=[[start.id,0]];while(q.length){const [id,d]=q.shift();if(depth.has(id)&&depth.get(id)<=d)continue;depth.set(id,d);const n=by.get(id);for(const o of n?.options||[])if(o.nextNodeId&&by.has(o.nextNodeId))q.push([o.nextNodeId,d+1])}}
+  for(const n of nodes){const d=depth.get(n.id)??0;if(!levels.has(d))levels.set(d,[]);levels.get(d).push(n)}const layout={};for(const [d,list] of [...levels.entries()].sort((a,b)=>a[0]-b[0]))list.forEach((n,i)=>layout[n.id]={x:360+d*330,y:80+i*260});return layout;
+}
+async function loadFlowBuilderPage(){
+  const [settings,team,connections]=await Promise.all([api('/api/settings'),api('/api/team'),api('/api/connections').catch(()=>[])]);state.settings=settings;state.team=team;state.connections=connections||[];state.flowVisualDraft=structuredClone(settings.queueFlowNodes||[]);state.flowVisualLayout={...(settings.queueFlowLayout||{})};state.flowZoom=1;state.flowSettingsLoaded=true;
+  if(!Object.keys(state.flowVisualLayout).length)state.flowVisualLayout=flowDefaultLayout(state.flowVisualDraft,settings.queueFlowStartNodeId);
+  $('#flowEnabled').checked=settings.queueRoutingEnabled!==false;$('#flowPreference').value=settings.queueInteractivePreference||'AUTO';$('#flowFooter').value=settings.queueRoutingFooter||'Balbino Chat';populateFlowStart();renderVisualFlow();
+  $('#flowLoadModel').onclick=()=>{if(!confirm('Carregar o modelo Já sou aluno / Quero ser aluno + polos? O fluxo atual será substituído.'))return;state.flowVisualDraft=queueFlowStudentCampusModel();state.settings.queueFlowStartNodeId='perfil';state.flowVisualLayout=flowDefaultLayout(state.flowVisualDraft,'perfil');populateFlowStart();renderVisualFlow();toast('Modelo carregado. Clique em Salvar fluxo para aplicar.')};
+  $('#flowAddNode').onclick=()=>{const id=flowUid('menu');state.flowVisualDraft.push({id,title:'Nova pergunta',interaction:'AUTO',captureKey:'',options:[{id:flowUid('opcao'),label:'Nova opção',value:'NOVA_OPCAO'}]});state.flowVisualLayout[id]={x:420,y:120+state.flowVisualDraft.length*50};populateFlowStart();renderVisualFlow();openVisualFlowNodeEditor(id)};
+  $('#flowSave').onclick=saveVisualFlow;$('#flowStart').onchange=()=>{state.settings.queueFlowStartNodeId=$('#flowStart').value;renderVisualFlow()};$('#flowZoomOut').onclick=()=>setFlowZoom(state.flowZoom-.1);$('#flowZoomIn').onclick=()=>setFlowZoom(state.flowZoom+.1);$('#flowFit').onclick=fitVisualFlow;
+}
+function populateFlowStart(){const sel=$('#flowStart');if(!sel)return;const current=state.settings.queueFlowStartNodeId||state.flowVisualDraft[0]?.id||'';sel.innerHTML=(state.flowVisualDraft||[]).map(n=>`<option value="${esc(n.id)}" ${n.id===current?'selected':''}>${esc(n.title.slice(0,70))}</option>`).join('');if(!state.flowVisualDraft.some(n=>n.id===current))state.settings.queueFlowStartNodeId=state.flowVisualDraft[0]?.id||null}
+function flowTerminalKeys(){const out=new Map();for(const n of state.flowVisualDraft||[])for(const o of n.options||[]){if(o.nextNodeId)continue;const key=o.departmentId||'__shared';if(!out.has(key))out.set(key,{departmentId:o.departmentId||null,name:o.departmentId?(state.team.departments.find(d=>d.id===o.departmentId)?.name||'Fila removida'):'Fila geral'})}return out}
+function renderVisualFlow(){
+  const layer=$('#flowNodesLayer'),canvas=$('#flowCanvas');if(!layer||!canvas)return;const nodes=state.flowVisualDraft||[],startId=$('#flowStart')?.value||state.settings.queueFlowStartNodeId||nodes[0]?.id||null;if(!nodes.length){layer.innerHTML='<div class="flow-empty">Nenhum menu criado. Clique em <b>＋ Menu</b> para começar.</div>';$('#flowLines').innerHTML='';return}
+  const fallback=flowDefaultLayout(nodes,startId);for(const n of nodes)if(!state.flowVisualLayout[n.id])state.flowVisualLayout[n.id]=fallback[n.id]||{x:360,y:80};
+  const terminals=[...flowTerminalKeys().entries()],maxX=Math.max(...nodes.map(n=>state.flowVisualLayout[n.id]?.x||360),360);const termX=maxX+360;const terminalLayout=new Map(terminals.map(([k,v],i)=>[k,{x:termX,y:90+i*150,...v}]));
+  const trigger=`<div class="visual-node trigger" data-virtual="trigger" style="left:70px;top:90px"><div class="visual-node-head"><span class="node-kind">Trigger</span><span>Início do fluxo</span></div><div class="visual-node-body"><div class="visual-node-message">Este bloco dispara automaticamente quando um novo contato inicia o atendimento.</div></div><span class="visual-node-port out"></span></div>`;
+  const menuHtml=nodes.map(n=>{const pos=state.flowVisualLayout[n.id];const opts=(n.options||[]).slice(0,6).map((o,i)=>`<div class="visual-node-option" data-option-id="${esc(o.id)}"><span>${i+1}</span><span>${esc(o.label)}${o.pendenciaTipoId?' <b title="Abre pendência automaticamente">☷</b>':''}${o.faqBot?' <b title="Responde pelo FAQ">💬</b>':''}</span></div>`).join('')+((n.options||[]).length>6?`<div class="small muted" style="margin-top:7px">+ ${(n.options||[]).length-6} opções</div>`:'');return`<div class="visual-node menu" data-node-id="${esc(n.id)}" style="left:${pos.x}px;top:${pos.y}px"><button class="node-edit" data-edit-node="${esc(n.id)}" title="Editar">⋯</button><div class="visual-node-head"><span class="node-kind">${n.interaction==='LIST'?'Lista':'Menu'}</span><span>${esc(n.captureKey||'Pergunta')}</span></div><div class="visual-node-body"><div class="visual-node-message">${esc(n.title)}</div>${opts}</div><span class="visual-node-port in"></span><span class="visual-node-port out"></span></div>`}).join('');
+  const queueHtml=terminals.map(([key,t])=>{const pos=terminalLayout.get(key),d=t.departmentId&&state.team.departments.find(x=>x.id===t.departmentId);return`<div class="visual-node queue" data-terminal-key="${esc(key)}" style="left:${pos.x}px;top:${pos.y}px;--queue-color:${queueHexColor(d)}"><div class="visual-node-head"><span class="node-kind">Transferir para</span></div><div class="visual-node-body"><div class="small muted">FILA</div><b>${esc(t.name)}</b></div><span class="visual-node-port in"></span></div>`}).join('');
+  layer.innerHTML=trigger+menuHtml+queueHtml;bindVisualNodeEvents();requestAnimationFrame(drawFlowLines);setFlowZoom(state.flowZoom,false);
+}
+function nodeElementById(id){return document.querySelector(`.visual-node[data-node-id="${CSS.escape(id)}"]`)}
+function terminalElement(key){return document.querySelector(`.visual-node[data-terminal-key="${CSS.escape(key)}"]`)}
+function elementAnchor(el,side='out',optionIndex=null){if(!el)return null;const x=el.offsetLeft+(side==='out'?el.offsetWidth:0),baseY=el.offsetTop;if(optionIndex==null)return{x,y:baseY+26};const optionEls=el.querySelectorAll('.visual-node-option'),op=optionEls[optionIndex];return{x,y:op?baseY+op.offsetTop+op.offsetHeight/2:baseY+50+optionIndex*30}}
+function drawFlowLines(){const svg=$('#flowLines');if(!svg)return;const nodes=state.flowVisualDraft||[],startId=$('#flowStart')?.value||state.settings.queueFlowStartNodeId||nodes[0]?.id;let paths='';const trigger=document.querySelector('.visual-node[data-virtual="trigger"]'),start=nodeElementById(startId);if(trigger&&start){const a=elementAnchor(trigger,'out'),b=elementAnchor(start,'in');paths+=flowPath(a,b)}for(const n of nodes){const from=nodeElementById(n.id);(n.options||[]).forEach((o,i)=>{const a=elementAnchor(from,'out',i);let target=null;if(o.nextNodeId)target=nodeElementById(o.nextNodeId);else target=terminalElement(o.departmentId||'__shared');const b=elementAnchor(target,'in');if(a&&b)paths+=flowPath(a,b)})}svg.innerHTML=paths}
+function flowPath(a,b){const dx=Math.max(55,Math.abs(b.x-a.x)*.48),d=`M ${a.x} ${a.y} C ${a.x+dx} ${a.y}, ${b.x-dx} ${b.y}, ${b.x} ${b.y}`;return`<path d="${d}"></path><circle cx="${a.x}" cy="${a.y}" r="4"></circle>`}
+function bindVisualNodeEvents(){
+  $$('[data-edit-node]').forEach(b=>b.onclick=e=>{e.stopPropagation();openVisualFlowNodeEditor(b.dataset.editNode)});$$('.visual-node.menu').forEach(el=>{el.ondblclick=()=>openVisualFlowNodeEditor(el.dataset.nodeId);el.onmousedown=e=>{if(e.button!==0||e.target.closest('button,.visual-node-option'))return;const id=el.dataset.nodeId,startX=e.clientX,startY=e.clientY,pos={...(state.flowVisualLayout[id]||{x:el.offsetLeft,y:el.offsetTop})};el.classList.add('dragging');const move=ev=>{const scale=state.flowZoom||1;state.flowVisualLayout[id]={x:Math.max(250,pos.x+(ev.clientX-startX)/scale),y:Math.max(20,pos.y+(ev.clientY-startY)/scale)};el.style.left=state.flowVisualLayout[id].x+'px';el.style.top=state.flowVisualLayout[id].y+'px';drawFlowLines()};const up=()=>{el.classList.remove('dragging');window.removeEventListener('mousemove',move);window.removeEventListener('mouseup',up)};window.addEventListener('mousemove',move);window.addEventListener('mouseup',up)}})
+}
+function setFlowZoom(value,announce=true){state.flowZoom=Math.min(1.5,Math.max(.55,Math.round(value*10)/10));const canvas=$('#flowCanvas');if(canvas)canvas.style.transform=`scale(${state.flowZoom})`;if($('#flowZoomLabel'))$('#flowZoomLabel').textContent=Math.round(state.flowZoom*100)+'%';if(announce)drawFlowLines()}
+function fitVisualFlow(){const vp=$('#flowViewport');if(!vp)return;setFlowZoom(.8,false);vp.scrollTo({left:0,top:0,behavior:'smooth'});drawFlowLines()}
+function visualFlowTargetOptions(action,current=''){if(action==='NEXT')return`<option value="">Selecione a próxima etapa</option>${state.flowVisualDraft.map(n=>`<option value="${esc(n.id)}" ${n.id===current?'selected':''}>${esc(n.title.slice(0,80))}</option>`).join('')}`;if(action==='DEPT')return`<option value="">Selecione a fila</option>${state.team.departments.filter(d=>d.active!==false).map(d=>`<option value="${esc(d.id)}" ${d.id===current?'selected':''}>${esc(d.name)}</option>`).join('')}`;return'<option value="">Fila geral</option>'}
+function openVisualFlowNodeEditor(id){const node=state.flowVisualDraft.find(n=>n.id===id);if(!node)return;showModal('Editar menu do fluxo',`<div class="grid cols-2"><div><label class="small muted">Mensagem / pergunta</label><textarea class="input" id="vfTitle" rows="5">${esc(node.title)}</textarea><label class="small muted" style="display:block;margin-top:8px">Formato do menu</label><select class="input" id="vfInteraction"><option value="AUTO" ${node.interaction==='AUTO'?'selected':''}>Automático</option><option value="BUTTONS" ${node.interaction==='BUTTONS'?'selected':''}>Botões (até 3)</option><option value="LIST" ${node.interaction==='LIST'?'selected':''}>Lista</option><option value="TEXT" ${node.interaction==='TEXT'?'selected':''}>Texto</option></select><label class="small muted" style="display:block;margin-top:8px">Salvar resposta no CRM como</label><input class="input" id="vfCapture" value="${esc(node.captureKey||'')}" placeholder="Ex.: polo, perfil"></div><div><div class="small muted">Pré-visualização</div><div class="flow-node-preview-phone" id="vfPreview"></div></div></div><div class="section-title" style="margin-top:12px"><b>Opções</b><button class="btn small" id="vfAddOption">＋ Adicionar opção</button></div><div class="flow-editor-options" id="vfOptions"></div><div class="flow-modal-actions"><div><button class="btn danger" id="vfDelete">Excluir menu</button></div><div><button class="btn" id="vfCancel">Cancelar</button><button class="btn primary" id="vfSave">Salvar menu</button></div></div>`);
+  const draft=structuredClone(node.options||[]);const renderRows=()=>{const box=$('#vfOptions');box.innerHTML=draft.map((o,i)=>{const action=o.nextNodeId?'NEXT':o.departmentId?'DEPT':'END',target=o.nextNodeId||o.departmentId||'';return`<div class="flow-editor-option" data-index="${i}"><div class="flow-editor-option-grid"><div><label class="small muted">Opção exibida</label><input class="input vfo-label" value="${esc(o.label||'')}"></div><div><label class="small muted">Ação</label><select class="input vfo-action"><option value="NEXT" ${action==='NEXT'?'selected':''}>Próximo menu</option><option value="DEPT" ${action==='DEPT'?'selected':''}>Transferir fila</option><option value="END" ${action==='END'?'selected':''}>Fila geral</option></select></div><div><label class="small muted">Destino</label><select class="input vfo-target">${visualFlowTargetOptions(action,target)}</select></div><button class="btn small danger vfo-remove" title="Remover">×</button></div><div class="flow-editor-option-extra"><div><label class="small muted">Valor salvo no CRM</label><input class="input vfo-value" value="${esc(o.value||o.label||'')}"></div><div><label class="small muted">Automático</label><select class="input vfo-pend">${pendTipoOptions(pendAutoValor(o))}</select></div><div><label class="small muted">Mensagem após a escolha (opcional)</label><input class="input vfo-after" value="${esc(o.afterMessage||'')}"></div></div></div>`}).join('');$$('.vfo-action').forEach((sel,i)=>sel.onchange=()=>{const row=sel.closest('.flow-editor-option'),target=row.querySelector('.vfo-target');target.innerHTML=visualFlowTargetOptions(sel.value,'');updatePreview()});$$('.vfo-remove').forEach((b,i)=>b.onclick=()=>{draft.splice(i,1);renderRows();updatePreview()});$$('#vfOptions input,#vfOptions select').forEach(x=>x.oninput=updatePreview);updatePreview()};
+  const syncRows=()=>{draft.splice(0,draft.length,...$$('.flow-editor-option').map((row,i)=>{const action=row.querySelector('.vfo-action').value,target=row.querySelector('.vfo-target').value,label=row.querySelector('.vfo-label').value.trim();return{id:(node.options?.[i]?.id)||flowUid('opcao'),label,value:row.querySelector('.vfo-value').value.trim()||label,afterMessage:row.querySelector('.vfo-after').value.trim(),nextNodeId:action==='NEXT'?(target||null):null,departmentId:action==='DEPT'?(target||null):null,...pendAutoCampos(row.querySelector('.vfo-pend')?.value||'')}}));return draft};
+  function updatePreview(){const title=$('#vfTitle')?.value||node.title,labels=$$('.vfo-label').map(i=>i.value).filter(Boolean);const box=$('#vfPreview');if(box)box.innerHTML=`<div class="preview-bubble">${esc(title)}</div>${labels.slice(0,10).map(x=>`<div class="preview-option">${esc(x)}</div>`).join('')}`}
+  $('#vfTitle').oninput=updatePreview;$('#vfAddOption').onclick=()=>{syncRows();draft.push({id:flowUid('opcao'),label:'Nova opção',value:'NOVA_OPCAO'});renderRows()};$('#vfCancel').onclick=hideModal;$('#vfDelete').onclick=()=>{if(state.flowVisualDraft.length<=1)return toast('O fluxo precisa ter pelo menos um menu.',true);if(!confirm('Excluir este menu?'))return;state.flowVisualDraft=state.flowVisualDraft.filter(n=>n.id!==id);for(const n of state.flowVisualDraft)for(const o of n.options||[])if(o.nextNodeId===id)o.nextNodeId=null;delete state.flowVisualLayout[id];if(state.settings.queueFlowStartNodeId===id)state.settings.queueFlowStartNodeId=state.flowVisualDraft[0]?.id||null;hideModal();populateFlowStart();renderVisualFlow()};$('#vfSave').onclick=()=>{syncRows();const title=$('#vfTitle').value.trim();if(!title)return toast('Digite a mensagem do menu.',true);if(!draft.length)return toast('Adicione pelo menos uma opção.',true);node.title=title;node.interaction=$('#vfInteraction').value;node.captureKey=$('#vfCapture').value.trim();node.options=structuredClone(draft);hideModal();populateFlowStart();renderVisualFlow()};renderRows();
+}
+async function saveVisualFlow(){const nodes=state.flowVisualDraft||[];if(!nodes.length)return toast('Crie pelo menos um menu.',true);for(const n of nodes)if(!(n.options||[]).length)return toast(`O menu “${n.title}” não possui opções.`,true);const payload={queueRoutingEnabled:$('#flowEnabled').checked,queueInteractivePreference:$('#flowPreference').value,queueRoutingFooter:$('#flowFooter').value.trim()||'Balbino Chat',queueFlowStartNodeId:$('#flowStart').value||nodes[0].id,queueFlowNodes:nodes,queueFlowLayout:state.flowVisualLayout};await api('/api/settings',{method:'PATCH',body:payload});state.settings={...state.settings,...payload};toast('Fluxo de atendimento salvo e ativado.');renderVisualFlow()}
+
+initTheme();initUiZoom();initSidebarControls();initNavModules();initConversationExpanded();$('#themeToggle').onclick=toggleTheme;$('#zoomOut').onclick=()=>applyUiZoom(bcUiZoom-10);$('#zoomIn').onclick=()=>applyUiZoom(bcUiZoom+10);$('#zoomReset').onclick=()=>applyUiZoom(100);$('#sidebarToggle').onclick=toggleSidebar;$('#sidebarPin').onclick=toggleSidebarPin;if($('#officialModuleToggle'))$('#officialModuleToggle').onclick=toggleOfficialModule;$('#userAppearance').onclick=appearanceModal;$('#mobileNavToggle').onclick=()=>document.body.classList.toggle('mobile-nav-open');$('#chatBackBtn').onclick=()=>{document.querySelector('.inbox')?.classList.remove('mobile-chat-open');closeDetails()};if($('#expandChatBtn'))$('#expandChatBtn').onclick=toggleConversationExpanded;$('#detailsBtn').onclick=()=>{if(conversationExpanded){conversationExpanded=false;syncConversationExpanded()}document.querySelector('.inbox')?.classList.toggle('show-details')};if($('#moreActionsBtn'))$('#moreActionsBtn').onclick=toggleChatMoreMenu;$$('#chatMoreMenu [data-more-action]').forEach(b=>b.onclick=e=>{e.stopPropagation();const a=b.dataset.moreAction;closeChatMoreMenu();if(a==='summary')aiSummary();else if(a==='status')changeAttendanceStatus();else if(a==='queue')returnToQueue();else if(a==='search')searchConversation();else if(a==='expand')toggleConversationExpanded();else if(a==='details'){if(conversationExpanded){conversationExpanded=false;syncConversationExpanded()}document.querySelector('.inbox')?.classList.add('show-details')}else if(a==='delete')deleteConversationAdmin();});document.addEventListener('click',e=>{const menu=$('#chatMoreMenu'),btn=$('#moreActionsBtn');if(menu&&!menu.classList.contains('hidden')&&!menu.contains(e.target)&&e.target!==btn)closeChatMoreMenu()});if($('#connectionSelectorBtn'))$('#connectionSelectorBtn').onclick=e=>{e.stopPropagation();renderConnectionSelector();$('#connectionSelectorMenu')?.classList.toggle('hidden')};if($('#manageConnectionsTop'))$('#manageConnectionsTop').onclick=()=>{if(state.me?.role==='SUPER_ADMIN'){nav('connections');$('#connectionSelectorMenu')?.classList.add('hidden')}};document.addEventListener('click',e=>{const wrap=$('#connectionSelectorWrap');if(wrap&&!wrap.contains(e.target))$('#connectionSelectorMenu')?.classList.add('hidden')});$('#loginForm').onsubmit=login;$('#logoutBtn').onclick=logout;$$('.nav button[data-page]').forEach(b=>b.onclick=()=>nav(b.dataset.page));$$('[data-go]').forEach(b=>b.onclick=()=>nav(b.dataset.go));$('#modalClose').onclick=hideModal;$('#modal').onclick=e=>{if(e.target.id==='modal')hideModal()};$('#convSearch').oninput=e=>loadConversations(e.target.value);$('#newConversation').onclick=newConversation;$('#filterConfig').onclick=()=>showModal('Filtros de atendimento','<p><b>Fila</b>: atendimentos aguardando alguém assumir.</p><p><b>Em atendimento</b>: conversas sob sua responsabilidade.</p><p><b>Todas</b>: todas as conversas que você pode visualizar.</p><p><b>Todos / Não lidas</b>: aparecem somente dentro de <b>Em atendimento</b> e refinam apenas as conversas sob sua responsabilidade.</p>');$$('#convFilters .chip').forEach(b=>b.onclick=()=>{state.pinnedConversationId=null;state.filter=b.dataset.filter;if(state.filter!=='MINE')state.conversationSubfilter='ALL';updateConversationFilterCounts();loadConversations($('#convSearch').value).catch(e=>toast(e.message,true))});if($('#closedConversationsBtn'))$('#closedConversationsBtn').onclick=()=>{state.pinnedConversationId=null;state.filter='CLOSED';state.conversationSubfilter='ALL';updateConversationFilterCounts();loadConversations($('#convSearch').value).catch(e=>toast(e.message,true))};$$('#convSubFilters .chip').forEach(b=>b.onclick=()=>{state.conversationSubfilter=b.dataset.subfilter;updateConversationFilterCounts();loadConversations($('#convSearch').value,{preserveChat:true}).catch(e=>toast(e.message,true))});$('#adminOwnerFilter').onchange=e=>{state.adminOwnerFilter=e.target.value;loadConversations($('#convSearch').value||'').catch(err=>toast(err.message,true))};$('#adminQueueFilter').onchange=e=>{state.adminQueueFilter=e.target.value;loadConversations($('#convSearch').value||'').catch(err=>toast(err.message,true))};$('#sendBtn').onclick=()=>sendMessage(state.composeMode==='note');$('#composer').addEventListener('keydown',e=>{if(handleQuickSlashKeydown(e))return;composerFormatShortcut(e);if(e.key==='Enter'&&!e.shiftKey&&!e.defaultPrevented){e.preventDefault();sendMessage(state.composeMode==='note')}});bindFormattingButtons();initQuickSlashAutocomplete();$('#composer').addEventListener('input',()=>{resizeComposer();handleQuickSlashInput();if(!state.current)return;api(`/api/conversations/${state.current.id}/typing`,{method:'POST',body:{on:true}}).catch(()=>{});clearTimeout(state.typingTimer);state.typingTimer=setTimeout(()=>api(`/api/conversations/${state.current.id}/typing`,{method:'POST',body:{on:false}}).catch(()=>{}),1500)});$('#cancelReply').onclick=()=>{state.replyTo=null;renderReplyStrip()};$('#messageModeBtn').onclick=()=>setComposerMode('message');$('#noteBtn').onclick=()=>setComposerMode('note');$('#attachBtn').onclick=toggleInsertMenu;$('#fileInput').onchange=e=>{addPendingFiles([...e.target.files],'attach');e.target.value=''};$('#composer').addEventListener('paste',handleComposerPaste);bindChatDropzone();bindMessageAutoScroll();if($('#newOfficialConnection'))$('#newOfficialConnection').onclick=startMetaEmbeddedSignup;if($('#metaEmbeddedConnect'))$('#metaEmbeddedConnect').onclick=startMetaEmbeddedSignup;if($('#metaEmbeddedSettings'))$('#metaEmbeddedSettings').onclick=metaEmbeddedSettingsForm;if($('#manualOfficialConnection'))$('#manualOfficialConnection').onclick=()=>officialConnectionForm();if($('#syncOfficialTemplates'))$('#syncOfficialTemplates').onclick=()=>syncTemplatesFromMeta();if($('#newOfficialTemplate'))$('#newOfficialTemplate').onclick=()=>officialTemplateForm();if($('#templateSearch'))$('#templateSearch').oninput=renderOfficialTemplates;if($('#templateConnectionFilter'))$('#templateConnectionFilter').onchange=renderOfficialTemplates;if($('#templateStatusFilter'))$('#templateStatusFilter').onchange=renderOfficialTemplates;if($('#newContactList'))$('#newContactList').onclick=contactListNew;if($('#contactListSearch'))$('#contactListSearch').oninput=renderContactLists;if($('#newCampaign'))$('#newCampaign').onclick=newCampaignWizard;if($('#campaignSearch'))$('#campaignSearch').oninput=renderCampaigns;if($('#campaignStatusFilter'))$('#campaignStatusFilter').onchange=renderCampaigns;$('#recordBtn').onclick=startRecording;$('#quickBtn').onclick=quickReply;$('#aiBtn').onclick=aiSuggest;$('#aiSummary').onclick=aiSummary;$('#claimBtn').onclick=claimConversation;$('#transferBtn').onclick=transfer;if($('#statusBtn'))$('#statusBtn').onclick=changeAttendanceStatus;if($('#returnQueueBtn'))$('#returnQueueBtn').onclick=returnToQueue;if($('#searchConversationBtn'))$('#searchConversationBtn').onclick=searchConversation;$('#closeBtn').onclick=closeConversation;$('#deleteConversationBtn').onclick=deleteConversationAdmin;if($('#leadImportBtn'))$('#leadImportBtn').onclick=()=>$('#leadImportFile').click();if($('#leadImportFile'))$('#leadImportFile').onchange=e=>e.target.files?.[0]&&previewLeadImport(e.target.files[0]).catch(err=>toast(err.message,true));if($('#refreshLeads'))$('#refreshLeads').onclick=()=>loadLeads().catch(e=>toast(e.message,true));if($('#matRefresh'))$('#matRefresh').onclick=()=>loadMatriculas().catch(e=>toast(e.message,true));if($('#matReprocess'))$('#matReprocess').onclick=reprocessMatriculaHistory;if($('#matConfig'))$('#matConfig').onclick=()=>openMatriculaSettings().catch(e=>toast(e.message,true));if($('#matSearch'))$('#matSearch').oninput=()=>{clearTimeout(window.__matSearchTimer);window.__matSearchTimer=setTimeout(()=>loadMatriculas().catch(e=>toast(e.message,true)),250)};if($('#matStatus'))$('#matStatus').onchange=()=>loadMatriculas().catch(e=>toast(e.message,true));if($('#matClear'))$('#matClear').onclick=()=>{$('#matSearch').value='';$('#matStatus').value='';loadMatriculas().catch(e=>toast(e.message,true))};if($('#leadExportBtn'))$('#leadExportBtn').onclick=exportLeads;if($('#leadSheetsBtn'))$('#leadSheetsBtn').onclick=openLeadSheetsManager;if($('#leadDistributeBtn'))$('#leadDistributeBtn').onclick=openLeadDistribution;if($('#leadFollowupBtn'))$('#leadFollowupBtn').onclick=()=>openLeadFollowup();if($('#leadSelectAll'))$('#leadSelectAll').onchange=e=>{if(e.target.checked)leadRowsCache.forEach(x=>leadSelectedIds.add(x.contactId));else leadRowsCache.forEach(x=>leadSelectedIds.delete(x.contactId));renderLeadRows()};$$('.lead-view-chip').forEach(b=>b.onclick=()=>{leadView=b.dataset.leadView||'';leadSelectedIds.clear();loadLeads().catch(e=>toast(e.message,true))});if($('#leadClearFilters'))$('#leadClearFilters').onclick=clearLeadFilters;if($('#leadSearch'))$('#leadSearch').oninput=()=>{clearTimeout(window.__leadSearchTimer);window.__leadSearchTimer=setTimeout(()=>loadLeads().catch(e=>toast(e.message,true)),250)};for(const id of ['leadBaseFilter','leadStatusFilter','leadAttendantFilter','leadOwnerFilter','leadTreatmentFilter'])if($('#'+id))$('#'+id).onchange=()=>{leadSelectedIds.clear();loadLeads().catch(e=>toast(e.message,true))};$('#crmSearch').oninput=e=>renderContacts(e.target.value);$('#groupSearch').oninput=e=>loadGroups(e.target.value).catch(()=>{});$$('#communityFilters .chip').forEach(b=>b.onclick=()=>{state.communityType=b.dataset.type;loadGroups($('#groupSearch').value||'').catch(e=>toast(e.message,true))});$('#refreshGroups').onclick=()=>loadGroups($('#groupSearch').value||'');$('#syncGroups').onclick=syncGroups;$('#newContact').onclick=newContact;$('#importContacts').onclick=()=>$('#csvInput').click();$('#csvInput').onchange=e=>e.target.files[0]&&importCSV(e.target.files[0]);$('#exportContacts').onclick=()=>location.href='/api/contacts/export';$('#newFollow').onclick=newFollow;$('#newScheduled').onclick=newScheduled;$('#newAutomation').onclick=()=>automationForm();$('#newKnowledge').onclick=()=>knowledgeForm();$('#newConnection').onclick=newConnection;$('#newUser').onclick=()=>userForm();$('#newDepartment').onclick=()=>departmentForm();$('#newApiKey').onclick=newApiKey;$('#newWebhook').onclick=newWebhook;$('#refreshLogs').onclick=loadLogs;if($('#supervisorRefresh'))$('#supervisorRefresh').onclick=loadSupervisor;if($('#supervisorDistribute'))$('#supervisorDistribute').onclick=distributeQueueNow;$('#saveSettings').onclick=saveSettings;$('#changePassword').onclick=changePassword;$('#refreshSystemInfo').onclick=loadSystemInfo;if($('#repairMultiConnection'))$('#repairMultiConnection').onclick=repairMultiConnection;$('#newQuickReply').onclick=()=>quickForm();if($('#newQuickReplyPage'))$('#newQuickReplyPage').onclick=()=>quickForm();if($('#quickRepliesSearch'))$('#quickRepliesSearch').oninput=e=>renderQuickRepliesPage(e.target.value);$('#downloadBackup').onclick=()=>location.href='/api/backup';if($('#operationalResetBtn'))$('#operationalResetBtn').onclick=openOperationalReset;$('#resetDemo').onclick=async()=>{if(confirm('Restaurar dados de demonstração? Isso substitui o banco local, mas não apaga a sessão do WhatsApp.')){await api('/api/dev/reset',{method:'POST'});location.reload()}};$('#aiTest').onclick=async()=>{$('#aiResult').textContent=(await api('/api/ai/suggest',{method:'POST',body:{text:$('#aiText').value}})).text};$('#globalSearch').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(globalSearch,450)});$('#globalSearch').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();globalSearch()}});
+
+
+document.addEventListener('click',e=>{if(document.body.classList.contains('mobile-nav-open')&&!e.target.closest('.sidebar')&&!e.target.closest('#mobileNavToggle'))closeMobileNav()});
+let conversationRefreshTimer=null,conversationRefreshRunning=false;
+function setRealtimeState(connected){state.realtime.connected=connected;state.realtime.lastEventAt=Date.now();const top=$('#realtimeTop');if(top){top.innerHTML=`<span class="realtime-dot ${connected?'':'off'}"></span>${connected?'Tempo real':'Reconectando'}`}}
+async function refreshCurrentMessagesSilently(){if(!state.current||!$('#inbox')?.classList.contains('active'))return;const currentId=state.current.id;try{const d=await api(`/api/conversations/${currentId}/messages?paged=1&limit=120&_=${Date.now()}`);if(state.current?.id!==currentId)return;const incoming=d.messages||[];const oldIds=state.messages.map(m=>`${m.id}:${m.status}:${m.file?.path||''}:${m.quoted?.externalId||m.quoted?.id||''}:${m.quoted?.body||''}`).join('|'),newIds=incoming.map(m=>`${m.id}:${m.status}:${m.file?.path||''}:${m.quoted?.externalId||m.quoted?.id||''}:${m.quoted?.body||''}`).join('|');if(oldIds!==newIds){const oldLast=state.messages.at(-1)?.id,hasNewLast=oldLast!==incoming.at(-1)?.id,follow=chatFollowBottom||messagesNearBottom();state.messages=incoming;state.messagePaging={hasMore:!!d.hasMore,oldestAt:d.oldestAt||null,loading:false};state.currentLock=d.lock||state.currentLock;renderChat(hasNewLast&&follow)}}catch(e){console.warn('Realtime messages fallback:',e.message)}}
+async function refreshInboxRealtime(){if(!$('#inbox')?.classList.contains('active')||conversationRefreshRunning)return;conversationRefreshRunning=true;const currentId=state.current?.id||null;try{await loadConversations($('#convSearch').value,{preserveChat:true});if(currentId&&state.current?.id===currentId)await refreshCurrentMessagesSilently()}catch(e){console.warn('Realtime inbox fallback:',e.message)}finally{conversationRefreshRunning=false}}
+function scheduleConversationRefresh(delay=150){if(!$('#inbox')?.classList.contains('active'))return;clearTimeout(conversationRefreshTimer);conversationRefreshTimer=setTimeout(()=>refreshInboxRealtime(),delay)}
+let connectionRefreshTimer=null;
+function scheduleConnectionRefresh(delay=500){if(!$('#connections')?.classList.contains('active'))return;clearTimeout(connectionRefreshTimer);connectionRefreshTimer=setTimeout(()=>loadConnections().catch(()=>{}),delay)}
+const events=new EventSource('/api/events');
+events.onopen=()=>setRealtimeState(true);events.onerror=()=>setRealtimeState(false);
+events.addEventListener('hello',()=>setRealtimeState(true));
+events.addEventListener('message.received',e=>{setRealtimeState(true);const p=JSON.parse(e.data);if(state.current?.id===p.conversationId&&!isPhantomMessage(p.message)&&!state.messages.some(m=>m.id===p.message?.id)){const follow=chatFollowBottom||messagesNearBottom();state.presence={jid:null,typing:false,participants:[]};state.messages.push(p.message);renderChat(follow)}handleIncomingNotification(p).catch(()=>{});scheduleConversationRefresh(40)});
+events.addEventListener('message.status',e=>{setRealtimeState(true);const p=JSON.parse(e.data);if(state.current?.id===p.conversationId){const i=state.messages.findIndex(m=>m.id===p.message?.id);if(i>=0)state.messages[i]=p.message;renderChat(false)}});
+events.addEventListener('presence.update',e=>{try{const p=JSON.parse(e.data);state.presence={jid:p.jid||null,typing:!!p.typing,participants:p.participants||[]};updateTypingIndicator()}catch{}});events.addEventListener('conversation.updated',e=>{try{const p=JSON.parse(e.data);if(p?.conversationId&&state.current?.id===p.conversationId&&p.claimedBy&&p.claimedBy!==state.me?.id)toast(`Atendimento assumido por ${p.claimedByName||'outro atendente'}.`);if(p?.previousOwnerId===state.me?.id&&p.ownerId!==state.me?.id&&state.me?.role==='AGENT'){if(state.current?.id===p.conversationId){state.current=null;state.currentLock=null;state.messages=[];renderEmptyConversation()}state.filter='MINE';toast(p.ownerName?`Atendimento transferido para ${p.ownerName}.`:'Atendimento devolvido para a fila.')}else if(p?.ownerId===state.me?.id&&p.previousOwnerId&&p.previousOwnerId!==state.me?.id){state.filter='MINE';toast('Um atendimento foi transferido para você.');if(state.notifications.sound)playNotificationSound(false);if(state.notifications.desktop&&'Notification'in window&&Notification.permission==='granted'){try{const n=new Notification('Novo atendimento atribuído a você',{body:'Abra o Balbino Chat para responder.',tag:`balbino-assigned-${p.conversationId}`});n.onclick=()=>{window.focus();nav('inbox');loadConversations().then(()=>selectConversation(p.conversationId));n.close()}}catch{}}}}catch{}scheduleConversationRefresh(40)});events.addEventListener('contacts.updated',()=>{if($('#crm').classList.contains('active'))loadContacts();scheduleConversationRefresh(60)});events.addEventListener('leads.updated',()=>{if($('#leads')?.classList.contains('active'))loadLeads().catch(()=>{})});events.addEventListener('matriculas.updated',()=>{if($('#matriculas')?.classList.contains('active'))loadMatriculas().catch(()=>{})});events.addEventListener('groups.updated',()=>{if($('#groups').classList.contains('active'))loadGroups($('#groupSearch').value||'');scheduleConversationRefresh(150)});events.addEventListener('channels.updated',()=>{if($('#groups').classList.contains('active'))loadGroups($('#groupSearch').value||'')});events.addEventListener('connection.update',()=>{api('/api/connections').then(rows=>{state.connections=rows;updateTop();if(state.current)renderChat(false)}).catch(()=>{});scheduleConnectionRefresh(250)});events.addEventListener('connection.deleted',()=>{scheduleConnectionRefresh(20);state.connections=state.connections.filter(c=>c.state!=='__DELETED__')});events.addEventListener('connection.sync',()=>scheduleConnectionRefresh(450));events.addEventListener('connection.avatar-sync',()=>scheduleConnectionRefresh(250));events.addEventListener('followup.due',e=>{const p=JSON.parse(e.data);toast(`Acompanhamento pendente: ${p.reason||'retornar contato'}`);if($('#followups').classList.contains('active'))loadFollowups()});events.addEventListener('conversation.deleted',e=>{try{const p=JSON.parse(e.data);if(state.current?.id===p.conversationId){state.current=null;state.currentLock=null;state.messages=[];renderEmptyConversation()}scheduleConversationRefresh(20)}catch{}});events.addEventListener('system.reload',()=>location.reload());
+setInterval(()=>{if($('#inbox')?.classList.contains('active'))refreshInboxRealtime()},4000);
+
+window.addEventListener('pointerdown',()=>{if(state.notifications.sound)unlockNotificationAudio().catch(()=>{})},{once:true,capture:true});
+(async()=>{try{const me=await api('/api/auth/me');if(me.user){state.me=me.user;hideLogin();await bootstrap()}else showLogin()}catch(e){console.error('Balbino Chat bootstrap error',e);toast(e?.message||'Falha ao iniciar o Balbino Chat',true);if(!state.me)showLogin()}finally{await finishStartupSplash()}})();
+
+/* Balbino Chat v0.6.5 — viewport físico do navegador */
+(function initBalbinoViewportV0530(){
+  let raf=0;const schedule=()=>{if(raf)return;raf=requestAnimationFrame(()=>{raf=0;syncAppViewport()})};
+  schedule();window.addEventListener('resize',schedule,{passive:true});window.addEventListener('orientationchange',schedule,{passive:true});
+  if(window.visualViewport){window.visualViewport.addEventListener('resize',schedule,{passive:true});window.visualViewport.addEventListener('scroll',schedule,{passive:true})}
+})();
+// ===== Cobrança (GO Negocia) • ponte mínima para public/cobranca.js =====
+window.BalbinoApp={api,esc,state,toast,showModal,hideModal,nav,selectConversation,fmtDate,renderContactSide,fichaContato,
+  abrirConversa:async id=>{nav('inbox');await new Promise(r=>setTimeout(r,250));await selectConversation(id);document.querySelector('.inbox')?.classList.add('show-details');renderContactSide();fichaContato()}};
+window.dispatchEvent(new Event('balbino:pronto'));

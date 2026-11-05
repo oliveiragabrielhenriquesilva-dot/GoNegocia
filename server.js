@@ -1,12 +1,755 @@
-// Entrada do app. A hospedagem pode executar ou carregar este arquivo.
-import { iniciar } from './app.js';
-import { config, VERSAO, NOME_PRODUTO } from './src/config.js';
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { inflateRawSync } from 'node:zlib';
+import { all, save, flush, uid, pushLog, addMessage, reset, replaceAll, removeContact, removeConversation, upsertContactByPhone, ensureConversation, databaseInfo, messagesForConversation, pagedMessages, conversationMessageSummary, findMessageById, handleInboundConversationState, createOperationalReset, isOperationalConversation, repairMultiConnectionData, getOpenConversation } from './src/store.js';
+import { connectInstance, disconnectInstance, sendText, sendChannelUpdate, checkWhatsAppNumber, isWhatsAppReady, editText, sendMedia, sendContact, sendReaction, sendPoll, markRead, setTyping, registerEmitter, requestWhatsAppSync, cancelWhatsAppSync, getWhatsAppSyncState, syncWhatsAppGroups, syncWhatsAppChannels, refreshWhatsAppChannel, syncWhatsAppContactPhotos, getWhatsAppContactPhotoSyncState, cancelWhatsAppContactPhotoSync, testInteractiveCapabilities, deleteInstance } from './src/providers/whatsapp-web.js';
+import { publicOfficialConnection, testOfficialConnection, fetchOfficialTemplates, sendOfficialText, sendOfficialMedia, sendOfficialTemplate } from './src/providers/whatsapp-cloud.js';
+import { assignConversation } from './src/automation-engine.js';
+import { dataDir, uploadsDir, sessionsDir, backupsDir, uploadDiskPath } from './src/runtime-paths.js';
+import { whatsappConversationDestination } from './src/conversation-routing.js';
+import { matriculaSettings, updateMatriculaSettings, reprocessMatriculas, updateMatricula, deleteMatricula, matriculaPublic } from './src/matricula-engine.js';
+import { WelcomeIntegration } from './src/integration-welcome.js';
+import { buscarFaq } from './src/faq.js';
+import { homeSeparada, servirComMarca, marcaAtual, nomeProduto } from './src/marca.js';
+// Cobrança escolar (módulo GO Negocia) — banco próprio em data/cobranca.sqlite, rotas em /api/cobranca/*
+import { abrirBanco as cobrancaAbrirBanco, migrar as cobrancaMigrar, um as cobrancaUm } from './src/cobranca/db.js';
+import { registrarPonte as cobrancaRegistrarPonte, modulosDe as cobrancaModulos } from './src/cobranca/ponte.js';
+import { cobrancaApi } from './src/cobranca/rotas.js';
+import { aoReceberMensagem as cobrancaAoReceber, bloqueioEnvioBalbino as cobrancaBloqueioEnvio } from './src/cobranca/integracao.js';
 
-iniciar().then(servidor => {
-  const endereco = servidor.address();
-  const local = typeof endereco === 'string' ? endereco : `${endereco.address}:${endereco.port}`;
-  console.log(`${NOME_PRODUTO} ${VERSAO} em ${local} — envio real: ${config().envioReal ? 'LIGADO' : 'desligado'}`);
-}).catch(erro => {
-  console.error('[go-negocia] Falha ao inicializar o servidor:', erro);
-  process.exitCode = 1;
+const __dirname=path.dirname(fileURLToPath(import.meta.url));
+function loadEnvFile(){try{const f=path.join(__dirname,'.env');if(!fs.existsSync(f))return;for(const line of fs.readFileSync(f,'utf8').split(/\r?\n/)){const t=line.trim();if(!t||t.startsWith('#'))continue;const i=t.indexOf('=');if(i<1)continue;const k=t.slice(0,i).trim(),v=t.slice(i+1).trim().replace(/^['\"]|['\"]$/g,'');if(process.env[k]==null)process.env[k]=v}}catch(e){console.warn('Não foi possível ler .env:',e.message)}}
+loadEnvFile();
+const PORT=Number(process.env.PORT||3001);
+const HOST=process.env.HOST||'0.0.0.0';
+const APP_VERSION='0.3.0';
+const ADMIN_USER=String(process.env.GOCHAT_ADMIN_USER||process.env.GO_NEGOCIA_ADMIN_LOGIN||'admin').trim().toLowerCase();
+const ADMIN_PASSWORD=String(process.env.GOCHAT_ADMIN_PASSWORD||process.env.GO_NEGOCIA_ADMIN_SENHA||'');
+const publicDir=path.join(__dirname,'public');
+const uploadDir=uploadsDir;fs.mkdirSync(uploadDir,{recursive:true});fs.mkdirSync(dataDir,{recursive:true});fs.mkdirSync(sessionsDir,{recursive:true});fs.mkdirSync(backupsDir,{recursive:true});
+const sessions=new Map(),sseClients=new Set(),conversationLocks=new Map();
+const welcomeIntegration=new WelcomeIntegration({
+  filePath:path.join(dataDir,'integration-boas-vindas.json'),
+  sendText,checkNumber:checkWhatsAppNumber,setTyping,
+  isConnected:id=>isWhatsAppReady(id),
+  getConnection:id=>all().connections.find(c=>c.id===id)||null,
+  onLog:event=>pushLog(`INTEGRACAO_BOAS_VINDAS_${event.status}`,event)
 });
+const sseHeartbeat=setInterval(()=>{for(const res of [...sseClients]){try{res.write(': balbino-heartbeat\n\n')}catch{sseClients.delete(res)}}},15000);sseHeartbeat.unref?.();
+const json=(res,status,data,headers={})=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8',...headers});res.end(JSON.stringify(data))};
+const text=(res,status,body,headers={})=>{res.writeHead(status,{'Content-Type':'text/plain; charset=utf-8',...headers});res.end(body)};
+const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.csv':'text/csv; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.svg':'image/svg+xml','.pdf':'application/pdf','.ogg':'audio/ogg','.mp3':'audio/mpeg','.mp4':'video/mp4','.webp':'image/webp','.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'};
+
+
+function matriculaSummary(rows=[]){
+  const valid=rows.filter(x=>x.status==='VALIDATED'),now=new Date(),todayStart=new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime(),monthStart=new Date(now.getFullYear(),now.getMonth(),1).getTime();
+  const countBy=key=>Object.entries(valid.reduce((m,x)=>{const k=String(x[key]||'Não identificado');m[k]=(m[k]||0)+1;return m},{})).sort((a,b)=>b[1]-a[1]).map(([name,count])=>({name,count}));
+  return {total:valid.length,today:valid.filter(x=>Number(x.messageAt||0)>=todayStart).length,month:valid.filter(x=>Number(x.messageAt||0)>=monthStart).length,review:rows.filter(x=>x.status==='REVIEW').length,duplicates:rows.filter(x=>x.status==='DUPLICATE').length,posts:rows.length,byPolo:countBy('polo'),bySeller:countBy('seller'),byProduct:countBy('product')};
+}
+
+function cookies(req){return Object.fromEntries((req.headers.cookie||'').split(';').map(x=>x.trim()).filter(Boolean).map(x=>{const i=x.indexOf('=');return[decodeURIComponent(x.slice(0,i)),decodeURIComponent(x.slice(i+1))]}))}
+function currentUser(req){if(process.env.CENTRAL_BALBINO_EMBEDDED==='1'){try{const portal=JSON.parse(req.headers['x-balbino-portal']||'null');if(!portal||portal.app!=='chat')return null;const key=String(portal.account||'').toLowerCase();const dbUser=all().users.find(x=>x.active!==false&&(key==='@admin'?x.role==='SUPER_ADMIN':String(x.username||'').toLowerCase()===key));if(!dbUser)return null;return{id:dbUser.id,name:dbUser.name,username:dbUser.username,role:dbUser.role,departmentId:dbUser.departmentId||null,access:dbUser.access||null,uiPreferences:dbUser.uiPreferences||null}}catch{return null}}const sid=cookies(req)['gochat.sid'];return sid?sessions.get(sid)||null:null}
+function auth(req,res){const u=currentUser(req);if(!u){json(res,401,{error:'AUTH_REQUIRED'});return null}return u}
+function secureCookieEnabled(){const configured=String(process.env.COOKIE_SECURE??'').trim().toLowerCase();if(configured==='true')return true;if(configured==='false')return false;return process.env.NODE_ENV==='production'}
+function setSession(res,u){const sid=crypto.randomBytes(24).toString('hex');sessions.set(sid,u);const secure=secureCookieEnabled();res.setHeader('Set-Cookie',`gochat.sid=${sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200${secure?'; Secure':''}`)}
+function clearSession(req,res){const sid=cookies(req)['gochat.sid'];if(sid)sessions.delete(sid);const secure=secureCookieEnabled();res.setHeader('Set-Cookie',`gochat.sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure?'; Secure':''}`)}
+function hashPassword(password,salt){return crypto.scryptSync(String(password),String(salt),32).toString('hex')}
+function verifyUserPassword(dbUser,password){
+  if(!dbUser?.passwordSalt||!password)return false;
+  const hash=String(dbUser.passwordHash||'');
+  if(!/^(?:[a-f0-9]{64}|[a-f0-9]{128})$/i.test(hash))return false;
+  const expected=Buffer.from(hash,'hex');
+  return crypto.timingSafeEqual(expected,crypto.scryptSync(String(password),String(dbUser.passwordSalt),expected.length));
+}
+function requireAdmin(u,res){if(u.role!=='SUPER_ADMIN'){json(res,403,{error:'Permissão de administrador necessária'});return false}return true}
+function requireSupervisor(u,res){if(!['SUPER_ADMIN','SUPERVISOR'].includes(u.role)){json(res,403,{error:'Permissão de supervisor necessária'});return false}return true}
+function quoteSnapshot(message,conversation=null){
+  if(!message)return null;const db=all();let senderName=message.senderName||'';
+  if(!senderName&&message.direction==='OUT')senderName=db.users.find(u=>u.id===message.authorId)?.name||'Você';
+  if(!senderName&&message.direction==='IN'&&conversation){const ct=db.contacts.find(c=>c.id===conversation.contactId);senderName=conversation.isGroup?'Participante':(ct?.name||'Contato')}
+  return{id:message.id||null,externalId:message.externalId||null,direction:message.direction||null,type:message.type||'TEXT',body:String(message.body||'Mensagem').slice(0,600),senderName:senderName||'Mensagem citada',participantJid:message.participantJid||null};
+}
+function isActiveConversation(c){return ['OPEN','WAITING','WAITING_CUSTOMER','WAITING_INTERNAL'].includes(c?.status)}
+function isCurrentOperationalConversation(c){return isOperationalConversation(c)}
+function isSharedQueueConversation(c){return isActiveConversation(c)&&!c.ownerId&&!c.isChannel}
+function effectiveUser(u){return all().users.find(x=>x.id===u?.id)||u||{}}
+function userAccess(u){const du=effectiveUser(u),a=du.access||{};return{allConnections:a.allConnections!==false,connectionIds:Array.isArray(a.connectionIds)?a.connectionIds:[],allDepartments:a.allDepartments!==false,departmentIds:Array.isArray(a.departmentIds)?a.departmentIds:[],allGroups:a.allGroups!==false,groupIds:Array.isArray(a.groupIds)?a.groupIds:[]}}
+function userCanConnection(u,id){
+  const du=effectiveUser(u);if(du.role==='SUPER_ADMIN')return true;
+  const a=userAccess(du);if(!a.allConnections&&!a.connectionIds.includes(id))return false;
+  if(!marcaAtual())return true;
+  const escola=cobrancaUm('SELECT o.id,o.ativa FROM conexoes c JOIN organizacoes o ON o.id=c.organizacao_id WHERE c.instance_id=?',id);
+  return !escola||Boolean(escola.ativa&&cobrancaUm('SELECT 1 FROM acessos WHERE usuario_id=? AND organizacao_id=?',du.id,escola.id));
+}
+function userCanDepartment(u,id){const du=effectiveUser(u);if(du.role==='SUPER_ADMIN')return true;if(!id)return true;const a=userAccess(du);return a.allDepartments||a.departmentIds.includes(id)}
+function normalizeGroupJid(jid=''){return String(jid||'').trim().toLowerCase()}
+function legacyGroupStableAccessId(instanceId,contactId,jid=''){const raw=`${instanceId||'principal'}|${contactId||jid||'grupo'}`;return`grpaccess_${crypto.createHash('sha1').update(raw).digest('hex').slice(0,20)}`}
+function groupStableAccessId(instanceId,contactId,jid='',sourceGroupId=''){const normalizedJid=normalizeGroupJid(jid),identity=normalizedJid?`jid:${normalizedJid}`:contactId?`contact:${contactId}`:sourceGroupId?`source:${sourceGroupId}`:'grupo';return`grpaccess_${crypto.createHash('sha1').update(identity).digest('hex').slice(0,20)}`}
+function groupPermissionKeys(ref){if(!ref)return[];if(typeof ref==='string')return[ref];const keys=[];if(ref.id)keys.push(ref.id);if(ref.permissionId)keys.push(ref.permissionId);if(ref.sourceGroupId)keys.push(ref.sourceGroupId);const stable=groupStableAccessId(ref.instanceId,ref.contactId,ref.jid,ref.sourceGroupId);if(stable)keys.push(stable);const legacy=legacyGroupStableAccessId(ref.instanceId,ref.contactId,ref.jid);if(legacy)keys.push(legacy);if(Array.isArray(ref.aliases))keys.push(...ref.aliases);return[...new Set(keys.filter(Boolean))]}
+function userCanGroup(u,ref){const du=effectiveUser(u);if(du.role==='SUPER_ADMIN')return true;const a=userAccess(du);if(a.allGroups)return true;const allowed=new Set(a.groupIds||[]);return groupPermissionKeys(ref).some(id=>allowed.has(id))}
+function conversationGroupRef(c){if(!c)return null;const db=all(),ct=db.contacts.find(x=>x.id===c.contactId),jid=ct?.whatsappJid||ct?.groupJid||null,actual=(c.groupId&&db.groups.find(g=>g.id===c.groupId))||db.groups.find(g=>normalizeGroupJid(g.jid)===normalizeGroupJid(jid)&&g.instanceId===c.instanceId)||db.groups.find(g=>g.contactId===c.contactId&&g.instanceId===c.instanceId)||null;if(actual)return actual;if(c.isGroup||ct?.isGroup)return{id:null,instanceId:c.instanceId,contactId:c.contactId,jid};return null}
+function registeredConnectionIds(db=all()){return new Set((db.connections||[]).filter(c=>c&&c.id).map(c=>String(c.id)))}
+function accessConnectionCatalog(db=all()){
+  // Somente conexões realmente cadastradas. IDs antigos encontrados em histórico (ex.: principal/teste)
+  // não são conexões válidas e não devem aparecer na gestão de acessos.
+  return(db.connections||[]).filter(c=>c&&c.id).map(c=>({id:String(c.id),name:c.name||c.phone||c.id,phone:c.phone||'',state:c.state||'DISCONNECTED',inferred:false})).sort((a,b)=>String(a.name).localeCompare(String(b.name),'pt-BR'));
+}
+function accessGroupCatalog(db=all()){
+  const validConnections=registeredConnectionIds(db),contacts=new Map((db.contacts||[]).map(c=>[c.id,c])),map=new Map();
+  const put=(data={})=>{
+    const instanceId=String(data.instanceId||''),contactId=data.contactId||null,jid=normalizeGroupJid(data.jid),sourceGroupId=data.sourceGroupId||null;
+    const id=groupStableAccessId(instanceId,contactId,jid,sourceGroupId),prev=map.get(id)||{id,permissionId:id,aliases:[],visible:false};
+    const legacy=legacyGroupStableAccessId(instanceId,contactId,jid),aliases=[id,sourceGroupId,legacy,...(data.aliases||[])].filter(Boolean);
+    const valid=validConnections.has(instanceId),candidateUpdated=Number(data.updatedAt||0),prevUpdated=Number(prev.updatedAt||0);
+    const prefer=valid&&(!prev.visible||candidateUpdated>=prevUpdated);
+    const next=prefer?{...prev,...data}:{...prev};
+    next.id=id;next.permissionId=id;next.visible=Boolean(prev.visible||valid);next.aliases=[...new Set([...(prev.aliases||[]),...aliases])];
+    if(prefer){next.instanceId=instanceId;next.contactId=contactId;next.jid=jid||data.jid||null;next.subject=data.subject||prev.subject||'Grupo WhatsApp';next.size=Number(data.size??prev.size??0);next.synced=data.synced!==false;next.updatedAt=data.updatedAt||prev.updatedAt||null}
+    else if(!next.subject){next.subject=data.subject||'Grupo WhatsApp';next.size=Number(data.size||0);next.jid=jid||data.jid||null;next.contactId=contactId;next.instanceId=instanceId;next.updatedAt=data.updatedAt||null}
+    map.set(id,next);
+  };
+  // Primeiro acumulamos TODAS as referências para preservar aliases de permissões antigas.
+  for(const g of db.groups||[]){const ct=contacts.get(g.contactId);put({sourceGroupId:g.id,instanceId:g.instanceId,contactId:g.contactId,jid:g.jid||ct?.whatsappJid||ct?.groupJid||null,subject:g.subject||ct?.name||'Grupo WhatsApp',size:g.size||g.participants?.length||0,updatedAt:g.updatedAt||null,synced:true})}
+  for(const c of db.conversations||[]){const ct=contacts.get(c.contactId);if(!(c.isGroup||ct?.isGroup))continue;const jid=ct?.whatsappJid||ct?.groupJid||null,g=(c.groupId&&db.groups.find(x=>x.id===c.groupId))||db.groups.find(x=>normalizeGroupJid(x.jid)===normalizeGroupJid(jid)&&x.instanceId===c.instanceId)||db.groups.find(x=>x.contactId===c.contactId&&x.instanceId===c.instanceId);put({sourceGroupId:g?.id||null,instanceId:c.instanceId,contactId:c.contactId,jid:g?.jid||jid,subject:g?.subject||ct?.name||c.groupName||'Grupo WhatsApp',size:g?.size||g?.participants?.length||0,updatedAt:g?.updatedAt||c.updatedAt||null,synced:Boolean(g)})}
+  // Só exibimos grupos associados a uma conexão realmente cadastrada. Como o ID canônico é pelo JID,
+  // o mesmo grupo não aparece novamente por ter registros históricos em principal/teste.
+  return[...map.values()].filter(g=>g.visible).map(({visible,...g})=>g).sort((a,b)=>String(a.subject).localeCompare(String(b.subject),'pt-BR'));
+}
+function accessCatalog(db=all()){return{connections:accessConnectionCatalog(db),groups:accessGroupCatalog(db),departments:(db.departments||[]).filter(d=>d.active!==false),generatedAt:Date.now()}}
+function canSeeConversation(u,c){
+  const du=effectiveUser(u);if(du.role==='SUPER_ADMIN')return true;
+  if(!userCanConnection(du,c.instanceId))return false;
+  if(c.isGroup)return userCanGroup(du,conversationGroupRef(c));
+  if(c.isChannel)return true;
+  if(!userCanDepartment(du,c.departmentId))return false;
+  if(isSharedQueueConversation(c))return true;
+  if(du.role==='SUPERVISOR')return true;
+  return c.ownerId===du.id;
+}
+function isHistoryConversation(c){return c?.status==='HISTORY'||Boolean(c?.isChannel)}
+async function rawBody(req,limit=55*1024*1024){const chunks=[];let size=0;for await(const c of req){size+=c.length;if(size>limit)throw new Error('Arquivo/corpo acima do limite permitido');chunks.push(c)}return Buffer.concat(chunks)}
+async function body(req,limit=4*1024*1024){const b=await rawBody(req,limit);if(!b.length)return{};const ct=req.headers['content-type']||'';if(ct.includes('application/json'))return JSON.parse(b.toString('utf8'));if(ct.includes('application/x-www-form-urlencoded'))return Object.fromEntries(new URLSearchParams(b.toString('utf8')));return{raw:b}}
+function parseMultipart(buffer,contentType){const m=/boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType||'');if(!m)throw new Error('Boundary multipart ausente');const boundary=Buffer.from(`--${m[1]||m[2]}`),parts=[];let pos=0;while(true){let start=buffer.indexOf(boundary,pos);if(start<0)break;start+=boundary.length;if(buffer.slice(start,start+2).toString()==='--')break;if(buffer.slice(start,start+2).toString()==='\r\n')start+=2;const end=buffer.indexOf(boundary,start);if(end<0)break;let part=buffer.slice(start,end);if(part.slice(-2).toString()==='\r\n')part=part.slice(0,-2);const headEnd=part.indexOf(Buffer.from('\r\n\r\n'));if(headEnd<0){pos=end;continue}const headerText=part.slice(0,headEnd).toString('utf8'),content=part.slice(headEnd+4),name=/name="([^"]+)"/i.exec(headerText)?.[1],filename=/filename="([^"]*)"/i.exec(headerText)?.[1],type=/content-type:\s*([^\r\n]+)/i.exec(headerText)?.[1]?.trim();parts.push({name,filename,type,content});pos=end}return parts}
+function safeFileName(name='file'){return path.basename(name).replace(/[^a-zA-Z0-9._-]+/g,'_').slice(-120)||'file'}
+function saveUpload(p){const dest=`${Date.now()}-${crypto.randomBytes(4).toString('hex')}-${safeFileName(p.filename)}`;const diskPath=path.join(uploadDir,dest);fs.writeFileSync(diskPath,p.content);return{path:`/uploads/${dest}`,diskPath,name:p.filename,mimetype:p.type||'application/octet-stream',size:p.content.length}}
+function findContact(id){return all().contacts.find(x=>x.id===id)}
+function findConversation(id){return all().conversations.find(x=>x.id===id)}
+function findMessage(id){return findMessageById(id)}
+function findOfficialConnection(id){return all().officialConnections.find(x=>x.id===id)}
+function isOfficialInstance(id){return Boolean(findOfficialConnection(id))}
+function normalizePhone(value=''){return String(value||'').replace(/\D/g,'')}
+function templateBodyText(t={}){const body=(t.components||[]).find(c=>String(c.type||'').toUpperCase()==='BODY');return String(body?.text||t.body||'')}
+function officialDestination(c,ct){return normalizePhone(ct?.phone||c?.officialFrom||'')}
+
+function leadServiceMessageInfo(message,db=all()){
+  if(!message||message.direction!=='OUT'||String(message.type||'').toUpperCase()==='NOTE')return null;
+  // Respostas automáticas, campanhas/API e notas internas não significam que um atendente trabalhou o lead.
+  if(message.auto||message.scheduledId||String(message.authorId||'').startsWith('api:'))return null;
+  const user=message.authorId?db.users.find(u=>u.id===message.authorId):null;
+  const at=Number(message.sentAt||message.createdAt||0)||null;if(!at)return null;
+  const source=user?'BALBINO_USER':message.historical?'HISTORICO_WHATSAPP':'WHATSAPP_EXTERNO';
+  const label=user?.name||(source==='HISTORICO_WHATSAPP'?'Atendente não identificado (histórico)':'Atendente não identificado (WhatsApp)');
+  return{at,userId:user?.id||null,userName:user?.name||null,attendantLabel:label,source};
+}
+function recordLeadEvent(contactId,type,data={}){const db=all();if(!Array.isArray(db.leadEvents))db.leadEvents=[];const ev={id:uid('le'),contactId,type,at:Date.now(),...data};db.leadEvents.push(ev);if(db.leadEvents.length>50000)db.leadEvents.splice(0,db.leadEvents.length-50000);return ev}
+
+function resolveConversationInstance(c,{reason='SEND'}={}){
+  const db=all();
+  if(!c)throw new Error('Conversa não encontrada');
+  const current=db.connections.find(x=>x.id===c.instanceId)||db.officialConnections.find(x=>x.id===c.instanceId);
+  if(current)return current.id;
+  const available=db.connections.filter(x=>x&&x.id);
+  if(available.length===1){
+    const previousInstanceId=c.instanceId||null,next=available[0];
+    c.instanceId=next.id;c.updatedAt=Date.now();
+    for(const scheduled of db.scheduledMessages||[]){if(scheduled.contactId===c.contactId&&scheduled.instanceId===previousInstanceId)scheduled.instanceId=next.id}
+    save();
+    pushLog('CONVERSATION_INSTANCE_REASSIGNED',{conversationId:c.id,contactId:c.contactId,from:previousInstanceId,to:next.id,reason});
+    emit('conversation.updated',{conversationId:c.id,instanceId:next.id,instanceReassigned:true});
+    return next.id;
+  }
+  if(!available.length)throw new Error('Nenhuma conexão WhatsApp cadastrada');
+  throw new Error(`A conexão ${c.instanceId||'anterior'} não existe mais. Selecione uma conexão para este atendimento.`);
+}
+function whatsappDestination(c,ct){return whatsappConversationDestination(c,ct,messagesForConversation(c.id))}
+function publicUser(x){if(!x)return null;const{passwordHash,passwordSalt,...safe}=x;return safe}
+function hydrated(c){const db=all(),contact=db.contacts.find(x=>x.id===c.contactId),owner=publicUser(db.users.find(x=>x.id===c.ownerId)),department=db.departments.find(x=>x.id===c.departmentId),instance=db.connections.find(x=>x.id===c.instanceId)||db.officialConnections.find(x=>x.id===c.instanceId),group=c.groupId?db.groups.find(g=>g.id===c.groupId):contact?.isGroup?db.groups.find(g=>g.contactId===contact.id&&g.instanceId===c.instanceId):null,channel=c.channelId?db.channels.find(ch=>ch.id===c.channelId):contact?.isChannel?db.channels.find(ch=>ch.contactId===contact.id&&ch.instanceId===c.instanceId):null,summary=conversationMessageSummary(c.id),waitFrom=c.status==='WAITING'?(c.queuedAt||c.createdAt):null,waitSeconds=waitFrom?Math.max(0,Math.floor((Date.now()-Number(waitFrom))/1000)):0,warn=Math.max(1,Number(db.settings.queueSlaWarningMinutes||15))*60,critical=Math.max(warn,Number(db.settings.queueSlaCriticalMinutes||30)*60),slaState=!waitSeconds?'OK':waitSeconds>=critical?'CRITICAL':waitSeconds>=warn?'WARNING':'OK';return{...c,contact,owner,department,instance,group,channel,lastMessage:summary.lastMessage,messageCount:summary.count,waitSeconds,slaState}}
+function hydrateMessage(m){const c=findConversation(m.conversationId);return{...m,conversation:c?hydrated(c):null}}
+function hydrateConversationsFast(conversations){
+  const db=all(),contacts=new Map(db.contacts.map(x=>[x.id,x])),users=new Map(db.users.map(x=>[x.id,publicUser(x)])),departments=new Map(db.departments.map(x=>[x.id,x])),instances=new Map([...db.connections,...db.officialConnections].map(x=>[x.id,x])),groups=new Map(db.groups.map(x=>[x.id,x])),channels=new Map(db.channels.map(x=>[x.id,x]));
+  return conversations.map(c=>{const summary=conversationMessageSummary(c.id),contact=contacts.get(c.contactId)||null,group=c.groupId?groups.get(c.groupId)||null:(contact?.isGroup?db.groups.find(g=>g.contactId===contact.id&&g.instanceId===c.instanceId)||null:null),channel=c.channelId?channels.get(c.channelId)||null:(contact?.isChannel?db.channels.find(ch=>ch.contactId===contact.id&&ch.instanceId===c.instanceId)||null:null),waitFrom=c.status==='WAITING'?(c.queuedAt||c.createdAt):null,waitSeconds=waitFrom?Math.max(0,Math.floor((Date.now()-Number(waitFrom))/1000)):0,warn=Math.max(1,Number(db.settings.queueSlaWarningMinutes||15))*60,critical=Math.max(warn,Number(db.settings.queueSlaCriticalMinutes||30)*60),slaState=!waitSeconds?'OK':waitSeconds>=critical?'CRITICAL':waitSeconds>=warn?'WARNING':'OK';return{...c,contact,owner:users.get(c.ownerId)||null,department:departments.get(c.departmentId)||null,instance:instances.get(c.instanceId)||null,group,channel,lastMessage:summary.lastMessage,messageCount:summary.count,waitSeconds,slaState}});
+}
+function csvCell(v){return`"${String(v??'').replaceAll('"','""')}"`}
+function parseCSV(s){const lines=String(s).replace(/^\uFEFF/,'').split(/\r?\n/).filter(Boolean);if(!lines.length)return[];const parse=line=>{const out=[];let cur='',q=false;for(let i=0;i<line.length;i++){const ch=line[i];if(ch==='"'){if(q&&line[i+1]==='"'){cur+='"';i++}else q=!q}else if(ch===','&&!q){out.push(cur);cur=''}else cur+=ch}out.push(cur);return out};const headers=parse(lines[0]).map(x=>x.trim().toLowerCase());return lines.slice(1).map(line=>{const vals=parse(line),o={};headers.forEach((h,i)=>o[h]=vals[i]||'');return o})}
+function localAI(text=''){const faq=buscarFaq(text,all().knowledge||[],{minimo:2});if(faq)return faq.item.content;const t=String(text).toLowerCase(),kb=all().knowledge.filter(k=>k.active!==false);const hit=kb.find(k=>`${k.title} ${k.category} ${k.content}`.toLowerCase().split(/\s+/).some(w=>w.length>5&&t.includes(w)));if(hit)return`Com base em “${hit.title}”: ${hit.content}`;if(t.includes('boleto')||t.includes('pagamento'))return'Posso verificar isso para você. Vou confirmar os dados e, se necessário, encaminhar ao Financeiro para orientar a forma correta de pagamento.';if(t.includes('valor')||t.includes('preço'))return'Claro! Posso te passar os valores e explicar o que está incluído em cada opção.';if(t.includes('cancel'))return'Entendi. Vou registrar sua solicitação e encaminhar ao responsável para orientar corretamente os próximos passos.';return'Obrigado pela mensagem! Vou verificar as informações e te orientar da melhor forma possível.'}
+function summaryForConversation(c){const msgs=messagesForConversation(c.id).filter(m=>m.direction!=='NOTE').slice(-12);const incoming=msgs.filter(m=>m.direction==='IN').map(m=>m.body).filter(Boolean);const outgoing=msgs.filter(m=>m.direction==='OUT').map(m=>m.body).filter(Boolean);return`${c.contact?.name||'Cliente'} está em atendimento no setor ${c.department?.name||'não definido'}. Últimas solicitações: ${incoming.slice(-3).join(' | ')||'sem solicitações textuais'}. Respostas recentes: ${outgoing.slice(-2).join(' | ')||'nenhuma resposta recente'}.`}
+
+function safeLower(v=''){return String(v||'').toLocaleLowerCase('pt-BR')}
+function messageKindMatches(m,type='ALL'){
+  const t=String(type||'ALL').toUpperCase();if(t==='ALL')return true;
+  if(t==='LINK')return /(?:https?:\/\/|www\.)\S+/i.test(String(m.body||''));
+  if(t==='TEXT')return ['TEXT','NOTE'].includes(String(m.type||'').toUpperCase());
+  if(t==='IMAGE')return String(m.type||'').toUpperCase()==='IMAGE';
+  if(t==='DOCUMENT')return String(m.type||'').toUpperCase()==='DOCUMENT';
+  if(t==='AUDIO')return String(m.type||'').toUpperCase()==='AUDIO';
+  if(t==='VIDEO')return String(m.type||'').toUpperCase()==='VIDEO';
+  return String(m.type||'').toUpperCase()===t;
+}
+function contactClassification(c={}){return c.profileType||c.classification||c.triageData?.perfil||'NÃO CLASSIFICADO'}
+function secondsSince(ts){return ts?Math.max(0,Math.round((Date.now()-Number(ts))/1000)):0}
+function lanAddresses(){
+  const out=[];try{for(const [name,list] of Object.entries(os.networkInterfaces()))for(const item of list||[]){if(item.family==='IPv4'&&!item.internal)out.push({name,address:item.address,url:`http://${item.address}:${PORT}`})}}catch(e){pushLog('NETWORK_INTERFACES_UNAVAILABLE',{error:String(e?.message||e)})}return out
+}
+function activeLock(conversationId){const lock=conversationLocks.get(conversationId);if(!lock)return null;if(lock.expiresAt<Date.now()){conversationLocks.delete(conversationId);return null}return lock}
+function acquireConversationLock(conversationId,u){if(all().settings.lockConversation===false)return null;const existing=activeLock(conversationId);if(existing&&existing.userId!==u.id)return existing;const lock={conversationId,userId:u.id,userName:u.name,expiresAt:Date.now()+120000};conversationLocks.set(conversationId,lock);return lock}
+function lockForClient(conversationId,u){const lock=activeLock(conversationId);if(!lock)return null;return{...lock,isMine:lock.userId===u.id}}
+function releaseUserLocks(userId){for(const [id,lock] of conversationLocks)if(lock.userId===userId)conversationLocks.delete(id)}
+
+async function deliverWebhook(hook,event,payload){try{const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),7000);const r=await fetch(hook.url,{method:'POST',headers:{'Content-Type':'application/json','X-GO-Chat-Event':event,...(hook.secret?{'X-GO-Chat-Secret':hook.secret}:{})},body:JSON.stringify({event,payload,createdAt:new Date().toISOString()}),signal:controller.signal});clearTimeout(timer);hook.lastStatus=r.status;hook.lastDeliveryAt=Date.now();hook.lastError=r.ok?null:`HTTP ${r.status}`;save();pushLog('WEBHOOK_DELIVERED',{webhookId:hook.id,event,status:r.status})}catch(e){hook.lastStatus=0;hook.lastDeliveryAt=Date.now();hook.lastError=e.message;save();pushLog('WEBHOOK_FAILED',{webhookId:hook.id,event,error:e.message})}}
+function emit(event,payload,{webhooks=true}={}){const msg=`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`,conversationId=payload?.conversationId||payload?.message?.conversationId||null,conversation=conversationId?findConversation(conversationId):null;for(const res of [...sseClients]){try{if(conversation){const viewer=all().users.find(x=>x.id===res._balbinoUserId);if(!viewer||!canSeeConversation(viewer,conversation))continue}res.write(msg)}catch{sseClients.delete(res)}}if(event==='message.received'&&conversation&&leadServiceMessageInfo(payload?.message)&&all().leadEntries.some(e=>e.contactId===conversation.contactId)){const info=leadServiceMessageInfo(payload?.message),ct=findContact(conversation.contactId);if(ct&&['NOVO','SEM_RESPOSTA'].includes(ct.leadStatus||'NOVO'))ct.leadStatus='EM_ATENDIMENTO';if(ct&&info?.userId)recordLeadEvent(ct.id,'SERVICE_MESSAGE',{userId:info.userId,conversationId:conversation.id,messageId:payload?.message?.id||null});save();const leadMsg=`event: leads.updated\ndata: ${JSON.stringify({contactId:conversation.contactId,reason:'SERVICE_MESSAGE'})}\n\n`;for(const res of [...sseClients]){try{res.write(leadMsg)}catch{sseClients.delete(res)}}}if(webhooks){for(const h of all().webhooks.filter(x=>x.enabled!==false&&(x.events?.includes('*')||x.events?.includes(event))))queueMicrotask(()=>deliverWebhook(h,event,payload))}}
+registerEmitter((event,payload)=>emit(event,payload));
+// ===== Cobrança (GO Negocia) — inicialização e ponte com o Balbino =====
+cobrancaAbrirBanco(process.env.BALBINO_COBRANCA_DB||path.join(dataDir,'cobranca.sqlite'));cobrancaMigrar();
+// Marca GO Negocia: o rodapé padrão dos botões do bot não pode mostrar o nome anterior.
+if(marcaAtual()&&all().settings.queueRoutingFooter==='Balbino Chat'){all().settings.queueRoutingFooter=marcaAtual().nome;save()}
+// Conexão marcada como TESTE na cobrança: o envio do atendente é gravado como SIMULATED e nunca chama o WhatsApp
+// (nem fica QUEUED, que o Balbino reenviaria sozinho ao reconectar).
+function cobrancaEnvioSimulado(instanceId){try{return Boolean(cobrancaUm("SELECT 1 FROM conexoes WHERE instance_id=? AND modo_envio='TESTE'",instanceId))}catch{return false}}
+cobrancaRegistrarPonte({
+  nomeUsuario:id=>id?(all().users.find(x=>x.id===id)?.name||null):null,
+  usuarioExiste:id=>all().users.some(x=>x.id===id&&x.active!==false),
+  ehAdmin:id=>all().users.some(x=>x.id===id&&x.role==='SUPER_ADMIN'),
+  listarUsuarios:()=>all().users.filter(x=>x.active!==false).map(x=>({id:x.id,name:x.name,username:x.username,role:x.role})),
+  listarConexoes:()=>all().connections.map(x=>({id:x.id,name:x.name||x.phone||x.id,state:x.state||'DISCONNECTED'})),
+  conexaoExiste:id=>all().connections.some(x=>x.id===id),
+  nomeConexao:id=>{const x=all().connections.find(c=>c.id===id);return x?.name||x?.phone||id},
+  podeVerConversa:(u,c)=>canSeeConversation(u,c),
+  podeConexao:(u,id)=>userCanConnection(u,id),
+  enviarTexto:(instanceId,destino,texto)=>sendText(instanceId,destino,texto),
+  emit:(event,payload)=>emit(event,payload),
+});
+// Mensagens recebidas pelo provedor real também atualizam o caso (idempotente).
+registerEmitter((event,payload)=>{if(event==='message.received'&&payload?.message?.direction==='IN'){try{cobrancaAoReceber(payload.conversationId,payload.message)}catch(e){pushLog('COBRANCA_EVENTO_ERRO',{error:e.message})}}});
+
+function checkApiKey(req){const token=(req.headers.authorization||'').replace(/^Bearer\s+/i,'')||req.headers['x-api-key'];if(!token)return null;const hash=crypto.createHash('sha256').update(String(token)).digest('hex');const key=all().apiKeys.find(k=>k.hash===hash&&k.enabled!==false);if(key){key.lastUsedAt=Date.now();save()}return key||null}
+
+function integrationCorsOrigin(req){
+  const origin=String(req.headers.origin||'').trim();if(!origin)return null;
+  const allowed=new Set(['http://localhost:3000','https://redebalbino.com.br','https://www.redebalbino.com.br']);
+  const ip=welcomeIntegration.publicConfig().allowedLanIp;if(ip)allowed.add(`http://${ip}:3000`);
+  return allowed.has(origin)?origin:false;
+}
+function integrationCorsHeaders(origin){return origin?{'Access-Control-Allow-Origin':origin,'Vary':'Origin','Access-Control-Allow-Methods':'GET, POST, OPTIONS','Access-Control-Allow-Headers':'Content-Type, X-Token','Access-Control-Max-Age':'600'}:{}}
+async function integrationApi(req,res,url){
+  const p=url.pathname,method=req.method;
+  if(p.startsWith('/api/integracao/config')){
+    const u=auth(req,res);if(!u)return;if(!requireAdmin(u,res))return;
+    if(method==='GET'&&p==='/api/integracao/config')return json(res,200,{config:welcomeIntegration.publicConfig(),saude:welcomeIntegration.health(),connections:all().connections.map(c=>({id:c.id,name:c.name||c.phone||c.id,phone:c.phone||'',state:c.state||'DISCONNECTED'}))});
+    if(method==='POST'&&p==='/api/integracao/config'){
+      try{const b=await body(req),targetId=String(b.connectionId??welcomeIntegration.publicConfig().connectionId);if(!all().connections.some(c=>c.id===targetId))throw new Error('Selecione uma conexão de WhatsApp cadastrada.');const next=welcomeIntegration.updateConfig(b);welcomeIntegration.start();pushLog('INTEGRACAO_BOAS_VINDAS_CONFIGURADA',{by:u.id,enabled:next.enabled,connectionId:next.connectionId,dailyLimit:next.dailyLimit});return json(res,200,{config:next,saude:welcomeIntegration.health()})}catch(e){return json(res,400,{error:e.message})}
+    }
+    if(method==='POST'&&p==='/api/integracao/config/token'){
+      const token=welcomeIntegration.generateToken();pushLog('INTEGRACAO_TOKEN_GERADO',{by:u.id});return json(res,200,{token,aviso:'Copie e guarde este token. Ele só será exibido agora; não o envie em mensagens.'});
+    }
+    if(method==='POST'&&p==='/api/integracao/config/pausar'){welcomeIntegration.pause(`Pausado pelo administrador no ${nomeProduto()}.`);pushLog('INTEGRACAO_BOAS_VINDAS_PAUSADA',{by:u.id});return json(res,200,{ok:true,saude:welcomeIntegration.health()})}
+    if(method==='POST'&&p==='/api/integracao/config/retomar'){welcomeIntegration.resume();welcomeIntegration.start();pushLog('INTEGRACAO_BOAS_VINDAS_RETOMADA',{by:u.id});return json(res,200,{ok:true,saude:welcomeIntegration.health()})}
+    return json(res,404,{error:'Configuração da integração não encontrada'});
+  }
+  const origin=integrationCorsOrigin(req);
+  if(origin===false)return json(res,403,{error:'Origem não autorizada para a integração local.'});
+  const headers=integrationCorsHeaders(origin);
+  if(method==='OPTIONS'){res.writeHead(204,headers);return res.end()}
+  if(!['GET','POST'].includes(method))return json(res,405,{error:'Método não permitido'},headers);
+  if(!welcomeIntegration.verifyToken(req.headers['x-token']))return json(res,401,{error:'X-Token inválido ou ainda não configurado.'},headers);
+  if(method==='GET'&&p==='/api/integracao/saude')return json(res,200,{...welcomeIntegration.health(),envio_ativado:welcomeIntegration.publicConfig().enabled},headers);
+  if(method==='POST'&&p==='/api/integracao/ativar-fila'){
+    try{welcomeIntegration.resume();welcomeIntegration.updateConfig({enabled:true});welcomeIntegration.start();pushLog('INTEGRACAO_BOAS_VINDAS_ATIVADA_POR_MATRICULAS',{});return json(res,200,{ok:true,envio_ativado:true,...welcomeIntegration.health()},headers)}
+    catch(e){return json(res,400,{error:`Não foi possível ativar a fila de boas-vindas: ${e.message}`},headers)}
+  }
+  if(method==='POST'&&p==='/api/integracao/boas-vindas'){
+    const b=await body(req);if(!Array.isArray(b.itens))return json(res,400,{error:'O campo itens deve ser uma lista.'},headers);
+    const result=welcomeIntegration.enqueue(b.itens);return json(res,200,result,headers);
+  }
+  if(method==='GET'&&p==='/api/integracao/boas-vindas/status'){
+    const ids=String(url.searchParams.get('ids')||'').split(',').map(x=>x.trim()).filter(Boolean).slice(0,100);return json(res,200,welcomeIntegration.statuses(ids),headers);
+  }
+  if(method==='POST'&&p==='/api/integracao/boas-vindas/cancelar'){
+    const b=await body(req);return json(res,200,welcomeIntegration.cancel(Array.isArray(b.ids)?b.ids.slice(0,100):[]),headers);
+  }
+  if(method==='POST'&&p==='/api/integracao/pausar'){welcomeIntegration.pause('Pausado pela aplicação de matrículas.');return json(res,200,{ok:true,pausado:true},headers)}
+  if(method==='POST'&&p==='/api/integracao/retomar'){welcomeIntegration.resume();welcomeIntegration.start();return json(res,200,{ok:true,pausado:false},headers)}
+  if(method==='GET'&&p==='/api/integracao/canais-whatsapp')return json(res,200,{channels:all().channels.filter(ch=>String(ch.jid||'').endsWith('@newsletter')).map(ch=>({id:ch.id,jid:ch.jid,name:ch.name||'Canal WhatsApp',instanceId:ch.instanceId,role:ch.role||null,connected:isWhatsAppReady(ch.instanceId)}))},headers);
+  if(method==='POST'&&p==='/api/integracao/canais-whatsapp/publicar'){
+    const b=await body(req,30*1024*1024),channel=all().channels.find(ch=>ch.id===String(b.channelId||'')&&String(ch.jid||'').endsWith('@newsletter'));
+    if(!channel)return json(res,404,{error:`Canal não encontrado no ${nomeProduto()}.`},headers);
+    if(!isWhatsAppReady(channel.instanceId))return json(res,409,{error:'A conexão WhatsApp do canal está desconectada.'},headers);
+    if(channel.role&&!['OWNER','ADMIN','ADMINISTRATOR'].includes(String(channel.role).toUpperCase()))return json(res,403,{error:'A conta conectada não aparece como administradora deste canal.'},headers);
+    const media=b.mediaBase64?Buffer.from(String(b.mediaBase64),'base64'):null;if(media&&media.length>20*1024*1024)return json(res,413,{error:'A arte excede o limite de 20 MB.'},headers);
+    try{const result=await sendChannelUpdate(channel.instanceId,channel.jid,{text:String(b.caption||''),media,mimetype:String(b.mimeType||'image/png'),fileName:String(b.fileName||'arte.png')});return json(res,200,{ok:true,channelId:channel.id,channelName:channel.name,messageId:result?.key?.id||null},headers)}
+    catch(e){pushLog('WHATSAPP_CHANNEL_PUBLISH_FAILED',{channelId:channel.id,instanceId:channel.instanceId,error:e.message});return json(res,502,{error:`O WhatsApp não aceitou a publicação: ${String(e.message||e).slice(0,300)}`},headers)}
+  }
+  return json(res,404,{error:'Endpoint de integração não encontrado.'},headers);
+}
+
+async function externalApi(req,res,url){const key=checkApiKey(req);if(!key)return json(res,401,{error:'API_KEY_INVALID'});const method=req.method,p=url.pathname;
+  if(method==='GET'&&p==='/external/v1/status')return json(res,200,{ok:true,version:APP_VERSION,connections:all().connections.map(c=>({id:c.id,state:c.state,phone:c.phone}))});
+  if(method==='GET'&&p==='/external/v1/contacts')return json(res,200,all().contacts);
+  if(method==='POST'&&p==='/external/v1/messages/send'){const b=await body(req),phone=String(b.phone||'').replace(/\D/g,'');if(!phone||!b.text)return json(res,400,{error:'phone e text são obrigatórios'});const ct=upsertContactByPhone(phone,{name:b.name||phone,source:'API'}),cv=ensureConversation(ct.id,b.instanceId||'principal'),dest=ct.whatsappJidAlt||ct.whatsappJid||ct.phone;let result,status='SENT',err=null;try{result=await sendText(cv.instanceId,dest,b.text)}catch(e){status='QUEUED';err=e.message}const m=addMessage({conversationId:cv.id,direction:'OUT',type:'TEXT',body:b.text,status,externalId:result?.key?.id||null,destination:dest,sendError:err,authorId:`api:${key.id}`});emit('message.received',{conversationId:cv.id,message:m});return json(res,200,{conversationId:cv.id,message:m})}
+  return json(res,404,{error:'Endpoint externo não encontrado'});
+}
+
+
+// ===== v0.15.0 • Pendências: utilitários =====
+function hojeSP(){return new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo'}).format(new Date())}
+function prazoEmDiasSP(dias=0){const d=new Date(`${hojeSP()}T12:00:00Z`);d.setUTCDate(d.getUTCDate()+Math.max(0,Number(dias)||0));return d.toISOString().slice(0,10)}
+function pendenciaVisivel(u,x){const du=effectiveUser(u);if(['SUPER_ADMIN','SUPERVISOR'].includes(du.role))return true;if(x.responsavelId===du.id||x.createdBy===du.id)return true;if(x.departmentId)return userCanDepartment(du,x.departmentId);const c=x.conversationId?findConversation(x.conversationId):null;return c?canSeeConversation(du,c):false}
+function pendenciaPublica(x){const db=all(),ct=db.contacts.find(c=>c.id===x.contactId),resp=db.users.find(v=>v.id===x.responsavelId),tipo=(db.settings.pendenciaTipos||[]).find(t=>t.id===x.tipoId),dep=db.departments.find(d=>d.id===x.departmentId);return{...x,contactName:ct?.name||ct?.phone||'Contato',contactPhone:ct?.phone||'',responsavelName:resp?.name||null,tipoName:tipo?.name||null,departmentName:dep?.name||null,atrasada:Boolean(x.status!=='CONCLUIDA'&&x.prazo&&x.prazo<hojeSP())}}
+function aplicarModeloPendencia(modelo,dados){return String(modelo||'').replace(/\{([^{}\w]*)(\w+)\}/g,(_,pre,k)=>dados[k]?pre+dados[k]:'')}
+async function avisarConclusaoPendencia(x,u){
+  const db=all(),c=x.conversationId?findConversation(x.conversationId):null,ct=findContact(x.contactId);
+  if(!c||!ct||c.isGroup||c.isChannel){x.avisoErro='Pendência sem conversa de WhatsApp vinculada';return'sem conversa'}
+  const tipo=(db.settings.pendenciaTipos||[]).find(t=>t.id===x.tipoId);
+  const texto=aplicarModeloPendencia(tipo?.mensagemConclusao||db.settings.pendenciaAvisoPadrao||'Olá{, nome}! Seu pedido {protocolo} foi concluído. ✅',{nome:String(ct.name||'').split(' ')[0]&&!/^\+?\d+$/.test(ct.name||'')?String(ct.name).split(' ')[0]:'',titulo:x.titulo,protocolo:x.protocolo});
+  try{
+    const instanceId=resolveConversationInstance(c,{reason:'PENDENCIA_CONCLUIDA'}),destination=whatsappDestination(c,ct);
+    const external=await sendText(instanceId,destination,texto);
+    const rec=addMessage({conversationId:c.id,direction:'OUT',type:'TEXT',body:texto,status:'SENT',authorId:u.id,auto:'PENDENCIA_CONCLUIDA',externalId:external?.messages?.[0]?.id||external?.key?.id||null,destination,sentAt:Date.now(),meta:{pendenciaId:x.id,protocolo:x.protocolo}});
+    x.avisadoEm=Date.now();x.avisoErro=null;emit('message.received',{conversationId:c.id,message:rec});return'enviado';
+  }catch(e){x.avisoErro=String(e?.message||e);return`falhou: ${x.avisoErro}`}
+}
+async function api(req,res,url){
+  const method=req.method,p=url.pathname;
+  if(method==='POST'&&p==='/api/auth/login'){const b=await body(req),username=String(b.username||'').trim().toLowerCase();let dbUser=all().users.find(x=>x.username===username&&x.active!==false);let ok=false;if(dbUser?.passwordHash)ok=verifyUserPassword(dbUser,b.password);else if(username===ADMIN_USER&&ADMIN_PASSWORD.length>=10&&b.password===ADMIN_PASSWORD){dbUser=dbUser||all().users.find(x=>x.id==='u-admin'&&x.active!==false&&!x.passwordHash);if(dbUser){dbUser.username=ADMIN_USER;dbUser.passwordSalt=crypto.randomBytes(16).toString('hex');dbUser.passwordHash=hashPassword(b.password,dbUser.passwordSalt)}ok=true}else if(dbUser)ok=verifyUserPassword(dbUser,b.password);if(!dbUser||!ok)return json(res,401,{error:'Usuário ou senha inválidos'});dbUser.status='ONLINE';save();const u={id:dbUser.id,name:dbUser.name,username:dbUser.username,role:dbUser.role,departmentId:dbUser.departmentId||null,access:dbUser.access||null,uiPreferences:dbUser.uiPreferences||null};setSession(res,u);pushLog('USER_LOGIN',{username:u.username,role:u.role});return json(res,200,{user:u})}
+  if(method==='GET'&&p==='/api/auth/me'){const su=currentUser(req);if(!su)return json(res,200,{user:null});const dbu=all().users.find(x=>x.id===su.id);return json(res,200,{user:{...su,access:dbu?.access||su.access||null,departmentId:dbu?.departmentId||su.departmentId||null,uiPreferences:dbu?.uiPreferences||su.uiPreferences||null}})};
+  if(method==='GET'&&p==='/api/auth/preferences'){const su=auth(req,res);if(!su)return;const dbu=all().users.find(x=>x.id===su.id);const defaults={theme:all().settings.appearanceBrand?.defaultTheme||'hybrid',accent:'#2563eb',sidebar:'#0f2f5f',desktopNotifications:true,soundNotifications:true,notifyWhenActive:false};return json(res,200,{...defaults,...(dbu?.uiPreferences||{})})}
+  if(method==='PATCH'&&p==='/api/auth/preferences'){const su=auth(req,res);if(!su)return;const b=await body(req),dbu=all().users.find(x=>x.id===su.id);if(!dbu)return json(res,404,{error:'Usuário não encontrado'});const current={theme:'dark',accent:'#2563eb',sidebar:'#0f2f5f',desktopNotifications:true,soundNotifications:true,notifyWhenActive:false,...(dbu.uiPreferences||{})};if(b.theme!=null){const theme=String(b.theme).toLowerCase();if(!['light','dark','hybrid'].includes(theme))return json(res,400,{error:'Tema inválido'});current.theme=theme}for(const key of ['accent','sidebar']){if(b[key]!=null){const value=String(b[key]).trim();if(!/^#[0-9a-f]{6}$/i.test(value))return json(res,400,{error:`Cor ${key} inválida`});current[key]=value.toLowerCase()}}for(const key of ['desktopNotifications','soundNotifications','notifyWhenActive']){if(b[key]!=null)current[key]=Boolean(b[key])}dbu.uiPreferences=current;su.uiPreferences=current;save();pushLog('USER_UI_PREFERENCES_CHANGED',{userId:su.id,theme:current.theme,accent:current.accent,sidebar:current.sidebar,desktopNotifications:current.desktopNotifications,soundNotifications:current.soundNotifications,notifyWhenActive:current.notifyWhenActive});return json(res,200,current)}
+  if(method==='POST'&&p==='/api/auth/change-password'){const u=auth(req,res);if(!u)return;const b=await body(req),du=all().users.find(x=>x.id===u.id);if(!du)return json(res,404,{error:'Usuário não encontrado'});if(String(b.newPassword||'').length<8)return json(res,400,{error:'A nova senha deve ter pelo menos 8 caracteres'});let valid=du.passwordHash?verifyUserPassword(du,b.currentPassword):(u.username===ADMIN_USER&&b.currentPassword===ADMIN_PASSWORD)||verifyUserPassword(du,b.currentPassword);if(!valid)return json(res,401,{error:'Senha atual incorreta'});du.passwordSalt=crypto.randomBytes(16).toString('hex');du.passwordHash=hashPassword(b.newPassword,du.passwordSalt);save();pushLog('USER_PASSWORD_CHANGED',{userId:u.id});return json(res,200,{ok:true})}
+  if(method==='POST'&&p==='/api/auth/logout'){const u=auth(req,res);if(!u)return;clearSession(req,res);releaseUserLocks(u.id);const du=all().users.find(x=>x.id===u.id);if(du){du.status='OFFLINE';save()}pushLog('USER_LOGOUT',{username:u.username});return json(res,200,{ok:true})}
+  const u=auth(req,res);if(!u)return;
+  if(p.startsWith('/api/cobranca/'))return cobrancaApi(req,res,url,u,{json,lerCorpo:body});
+  // Módulo Mensagens liberado por usuário (padrão: liberado). Bloqueio no servidor, não só na tela.
+  if(!cobrancaModulos(u).atendimento&&/^\/api\/(events|conversations|contacts|groups|groups-channels|channels|quick-replies|scheduled-messages|media|search|pendencias|ai|faq|team)(\/|$)/.test(p))return json(res,403,{error:'Módulo de Mensagens não liberado para este usuário',codigo:'MODULO'});
+  if(method==='GET'&&p==='/api/events'){res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no'});res.write('event: hello\ndata: {"ok":true}\n\n');res._balbinoUserId=u.id;sseClients.add(res);req.on('close',()=>sseClients.delete(res));return}
+
+  if(method==='GET'&&p==='/api/dashboard'){const db=all(),visible=db.conversations.filter(c=>canSeeConversation(u,c)&&!c.isChannel&&isCurrentOperationalConversation(c)),open=visible.filter(isActiveConversation),today=new Date();today.setHours(0,0,0,0);const closedToday=visible.filter(c=>c.status==='CLOSED'&&c.closedByUser!==false&&c.closedAt>=today.getTime()),csat=closedToday.filter(c=>c.csat).map(c=>c.csat);return json(res,200,{todayConversations:visible.filter(c=>isActiveConversation(c)&&c.createdAt>=today.getTime()).length,waiting:open.filter(c=>c.status==='WAITING'||!c.ownerId).length,open:open.length,closedToday:closedToday.length,unread:open.reduce((a,c)=>a+Number(c.unread||0),0),contacts:db.contacts.filter(c=>!c.isGroup&&!c.isChannel).length,groups:db.groups.length,channels:db.channels.length,history:visible.filter(isHistoryConversation).length,connected:db.connections.filter(c=>c.state==='CONNECTED').length,usersOnline:db.users.filter(x=>x.status==='ONLINE'&&x.active!==false).length,csat:csat.length?(csat.reduce((a,b)=>a+b,0)/csat.length).toFixed(1):'—',scheduled:db.scheduledMessages.filter(s=>s.status==='PENDING').length,followups:(db.pendencias||[]).filter(x=>x.status!=='CONCLUIDA').length,autoRepliesEnabled:db.settings.autoRepliesEnabled!==false,byDepartment:db.departments.map(d=>({id:d.id,name:d.name,count:open.filter(c=>c.departmentId===d.id).length}))})}
+
+  if(method==='GET'&&p==='/api/search'){const q=(url.searchParams.get('q')||'').trim().toLowerCase();if(!q)return json(res,200,{contacts:[],conversations:[],messages:[]});const contacts=all().contacts.filter(c=>!c.isGroup&&!c.isChannel&&`${c.name} ${c.phone} ${c.email} ${c.company} ${(c.tags||[]).join(' ')}`.toLowerCase().includes(q)).slice(0,20);const visibleConversations=all().conversations.filter(c=>canSeeConversation(u,c)&&isCurrentOperationalConversation(c)),visibleIds=new Set(visibleConversations.map(c=>c.id));const messages=all().messages.filter(m=>visibleIds.has(m.conversationId)&&String(m.body||'').toLowerCase().includes(q)).slice(-30).reverse().map(hydrateMessage);const conversations=visibleConversations.map(hydrated).filter(c=>`${c.contact?.name} ${c.contact?.phone} ${c.lastMessage?.body||''}`.toLowerCase().includes(q)).slice(0,20);return json(res,200,{contacts,conversations,messages})}
+
+  if(method==='GET'&&p==='/api/conversations/stats'){const instanceFilter=String(url.searchParams.get('instanceId')||'').trim();const rows=all().conversations.filter(c=>canSeeConversation(u,c)&&!c.isChannel&&isCurrentOperationalConversation(c)&&(!instanceFilter||c.instanceId===instanceFilter)),active=rows.filter(isActiveConversation);return json(res,200,{ALL:active.length,UNREAD:active.filter(c=>c.ownerId===u.id&&Number(c.unread||0)>0).length,MINE:active.filter(c=>c.ownerId===u.id).length,WAITING:active.filter(c=>!c.isGroup&&(c.status==='WAITING'||!c.ownerId)).length,GROUPS:active.filter(c=>c.isGroup).length,HISTORY:rows.filter(c=>c.status==='HISTORY').length,CLOSED:rows.filter(c=>c.status==='CLOSED').length})}
+  if(method==='GET'&&p==='/api/conversations'){const q=(url.searchParams.get('q')||'').toLowerCase(),instanceFilter=String(url.searchParams.get('instanceId')||'').trim(),requestedFilter=(url.searchParams.get('filter')||'ALL').toUpperCase(),allowedFilters=['WAITING','UNREAD','MINE','ALL','GROUPS','HISTORY','CLOSED','CHANNELS','OPEN'],filter=allowedFilters.includes(requestedFilter)?requestedFilter:'MINE',limit=Math.max(1,Math.min(200,Number(url.searchParams.get('limit')||80))),offset=Math.max(0,Number(url.searchParams.get('offset')||0));let base=all().conversations.filter(c=>canSeeConversation(u,c)&&isCurrentOperationalConversation(c)&&(!instanceFilter||c.instanceId===instanceFilter));if(filter!=='CHANNELS')base=base.filter(c=>!c.isChannel);if(filter==='CHANNELS')base=base.filter(c=>c.isChannel);if(filter==='UNREAD')base=base.filter(c=>isActiveConversation(c)&&c.ownerId===u.id&&Number(c.unread||0)>0);if(filter==='MINE')base=base.filter(c=>isActiveConversation(c)&&c.ownerId===u.id);if(filter==='WAITING')base=base.filter(c=>isActiveConversation(c)&&!c.isGroup&&(c.status==='WAITING'||!c.ownerId));if(filter==='GROUPS')base=base.filter(c=>isActiveConversation(c)&&c.isGroup);if(filter==='HISTORY')base=base.filter(c=>c.status==='HISTORY');if(filter==='CLOSED')base=base.filter(c=>c.status==='CLOSED');if(filter==='OPEN'||filter==='ALL')base=base.filter(isActiveConversation);base=base.sort((a,b)=>b.updatedAt-a.updatedAt);let rows=hydrateConversationsFast(base);if(q)rows=rows.filter(c=>`${c.contact?.name} ${c.contact?.phone} ${c.lastMessage?.body||''}`.toLowerCase().includes(q));return json(res,200,rows.slice(offset,offset+limit))}
+  if(method==='POST'&&p==='/api/conversations'){const b=await body(req),db=all(),targetContact=findContact(b.contactId);if(!targetContact)return json(res,404,{error:'Contato não encontrado'});const instanceId=b.instanceId||'principal';if(!userCanConnection(u,instanceId))return json(res,403,{error:'Você não possui acesso a esta conexão WhatsApp'});const requestedDepartment=b.departmentId||u.departmentId||'d-comercial';if(!userCanDepartment(u,requestedDepartment))return json(res,403,{error:'Você não possui acesso a esta fila/setor'});let c=getOpenConversation(b.contactId,instanceId);if(c){const changedOwner=Boolean(b.ownerId||u.id)&&c.ownerId!==(b.ownerId||u.id);c.ownerId=b.ownerId||u.id;c.departmentId=requestedDepartment||c.departmentId||'d-comercial';c.status='OPEN';c.updatedAt=Date.now();delete c.queuedAt;save();pushLog('CONVERSATION_REUSED',{conversationId:c.id,requestedContactId:b.contactId,actualContactId:c.contactId,instanceId,by:u.id,ownerChanged:changedOwner});emit('conversation.updated',{conversationId:c.id,ownerId:c.ownerId,departmentId:c.departmentId})}else{c=db.conversations.find(x=>x.contactId===b.contactId&&x.instanceId===instanceId&&isCurrentOperationalConversation(x)&&x.status==='HISTORY'&&!x.isChannel);if(c){c.status='OPEN';c.importedHistory=false;c.ownerId=b.ownerId||u.id;c.departmentId=requestedDepartment||c.departmentId||'d-comercial';c.updatedAt=Date.now();delete c.archivedAt;delete c.closedAt;delete c.closeReason;save();pushLog('CONVERSATION_REOPENED_FROM_HISTORY',{conversationId:c.id,by:u.id});emit('conversation.updated',{conversationId:c.id})}else{{const createdAt=Date.now(),id=uid('cv'),d=new Date(createdAt),stamp=`${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;c={id,protocol:`ATD-${stamp}-${String(id).replace(/[^a-zA-Z0-9]/g,'').slice(-6).toUpperCase()}`,contactId:b.contactId,instanceId,departmentId:requestedDepartment,ownerId:b.ownerId||u.id,status:'OPEN',priority:b.priority||'NORMAL',unread:0,peerJid:targetContact.whatsappJid||targetContact.whatsappJidAlt||(targetContact.phone?`${normalizePhone(targetContact.phone)}@s.whatsapp.net`:null),createdAt,updatedAt:createdAt}};db.conversations.push(c);save();pushLog('CONVERSATION_CREATED',{conversationId:c.id});emit('conversation.updated',{conversationId:c.id})}}return json(res,201,hydrated(c))}
+
+  const claimMatch=p.match(/^\/api\/conversations\/([^/]+)\/claim$/);if(claimMatch&&method==='POST'){const c=findConversation(claimMatch[1]);if(!c)return json(res,404,{error:'Conversa não encontrada'});if(c.isChannel)return json(res,409,{error:'Canais não entram em fila de atendimento'});if(c.isGroup)return json(res,200,hydrated(c));if(!isActiveConversation(c))return json(res,409,{error:'Este atendimento não está disponível na fila'});if(c.triageStatus==='AWAITING_CHOICE')return json(res,409,{error:'O contato ainda está escolhendo o setor. Aguarde a conclusão da triagem automática.'});if(!canSeeConversation(u,c))return json(res,403,{error:'Este atendimento pertence à fila de outro setor'});if(c.ownerId&&c.ownerId!==u.id){const owner=all().users.find(x=>x.id===c.ownerId);return json(res,409,{error:`Atendimento já assumido por ${owner?.name||'outro atendente'}`})}const maxConcurrent=Math.max(0,Number(all().settings.maxConcurrentConversations||0));if(maxConcurrent&&all().conversations.filter(x=>x.ownerId===u.id&&isCurrentOperationalConversation(x)&&isActiveConversation(x)&&x.id!==c.id).length>=maxConcurrent)return json(res,409,{error:`Você atingiu o limite de ${maxConcurrent} atendimentos simultâneos.`});c.ownerId=u.id;c.status='OPEN';c.claimedAt=Date.now();c.claimedBy=u.id;c.updatedAt=Date.now();delete c.queuedAt;acquireConversationLock(c.id,u);save();pushLog('CONVERSATION_CLAIMED',{conversationId:c.id,ownerId:u.id,ownerName:u.name});emit('conversation.updated',{conversationId:c.id,claimedBy:u.id,claimedByName:u.name});return json(res,200,hydrated(c))}
+
+  let routeMatch=p.match(/^\/api\/conversations\/([^/]+)\/messages$/);
+  if(routeMatch&&method==='GET'){const c=findConversation(routeMatch[1]);if(!c)return json(res,404,{error:'Conversa não encontrada'});if(!canSeeConversation(u,c))return json(res,403,{error:'Sem acesso a esta conversa'});const limit=Math.max(20,Math.min(500,Number(url.searchParams.get('limit')||120))),before=Number(url.searchParams.get('before')||0),paged=url.searchParams.get('paged')==='1';const page=pagedMessages(c.id,{limit,before}),msgs=page.messages;let lock=null;if(c.isGroup||c.ownerId===u.id){c.unread=0;if(!c.isGroup)lock=acquireConversationLock(c.id,u);save();if(!isOfficialInstance(c.instanceId))markRead(c.instanceId,msgs.filter(x=>x.direction==='IN'&&x.status!=='READ')).catch(()=>{});for(const x of msgs.filter(x=>x.direction==='IN'))x.status='READ';save()}return json(res,200,paged?{messages:msgs,hasMore:page.hasMore,oldestAt:page.oldestAt,lock:lockForClient(c.id,u),claimable:!c.isGroup&&isSharedQueueConversation(c)}:msgs)}
+  if(routeMatch&&method==='POST'){
+    const c=findConversation(routeMatch[1]);if(!c)return json(res,404,{error:'Conversa não encontrada'});if(!canSeeConversation(u,c))return json(res,403,{error:'Sem acesso a esta conversa'});if(c.isChannel)return json(res,409,{error:'Canais são somente leitura nesta versão'});if(c.status==='CLOSED')return json(res,409,{error:'Atendimento finalizado. Reabra antes de enviar uma nova mensagem.'});if(c.status==='HISTORY'){c.status='OPEN';c.importedHistory=false;c.ownerId=c.ownerId||u.id;c.updatedAt=Date.now();delete c.archivedAt;delete c.closedAt;delete c.closeReason;save();pushLog('CONVERSATION_REOPENED_FROM_HISTORY',{conversationId:c.id,by:u.id,reason:'MESSAGE_SEND'});emit('conversation.updated',{conversationId:c.id})}if(!c.isGroup&&!c.ownerId)return json(res,409,{error:'Este atendimento está na fila. Clique em “Assumir atendimento” antes de responder.'});if(!c.isGroup&&c.ownerId!==u.id&&u.role==='AGENT')return json(res,409,{error:'Este atendimento pertence a outro atendente.'});const held=c.isGroup?null:activeLock(c.id);if(!c.isGroup&&all().settings.lockConversation!==false&&held&&held.userId!==u.id)return json(res,409,{error:`Conversa em atendimento por ${held.userName}. Aguarde ou transfira o atendimento.`});if(!c.isGroup)acquireConversationLock(c.id,u);const ct=findContact(c.contactId),contentType=req.headers['content-type']||'';let b={},files=[];
+    if(contentType.includes('multipart/form-data')){const buf=await rawBody(req,(all().settings.maxUploadMB||55)*1024*1024);for(const part of parseMultipart(buf,contentType)){if(part.filename)files.push(saveUpload(part));else if(part.name)b[part.name]=part.content.toString('utf8')}}else b=await body(req);
+    const note=String(b.note)==='true',bodyText=String(b.body||'').trim(),replyTo=b.replyTo?findMessage(b.replyTo):null,ptt=String(b.ptt)==='true';if(!bodyText&&!files.length)return json(res,400,{error:'Mensagem vazia'});
+    if(!note){const bloqCob=cobrancaBloqueioEnvio(c,bodyText);if(bloqCob)return json(res,409,{error:bloqCob,codigo:'DADOS_ANTES_DA_VERIFICACAO'})}
+    if(note){const rec=addMessage({conversationId:c.id,direction:'NOTE',type:'NOTE',body:bodyText,status:'INTERNAL',authorId:u.id});pushLog('NOTE_CREATED',{conversationId:c.id,messageId:rec.id});emit('message.received',{conversationId:c.id,message:rec});return json(res,200,{messages:[rec]})}
+    const instanceId=resolveConversationInstance(c,{reason:'MESSAGE_SEND'}),official=findOfficialConnection(instanceId),destination=official?officialDestination(c,ct):whatsappDestination(c,ct),records=[];
+    if(files.length){for(let i=0;i<files.length;i++){const file=files[i],caption=i===0?bodyText:'';let external,status='SENT',err=null,type=file.mimetype.startsWith('image/')?'IMAGE':file.mimetype.startsWith('video/')?'VIDEO':file.mimetype.startsWith('audio/')?'AUDIO':'DOCUMENT';if(!official&&cobrancaEnvioSimulado(instanceId))status='SIMULATED';else try{external=official?await sendOfficialMedia(official,destination,{filePath:file.diskPath,mimetype:file.mimetype,filename:file.name,caption}):await sendMedia(instanceId,destination,file.diskPath,file.mimetype,file.name,caption,ptt)}catch(e){status=official?'FAILED':'QUEUED';err=e.message}delete file.diskPath;file.ptt=ptt;const rec=addMessage({conversationId:c.id,direction:'OUT',type,body:caption||file.name,status,authorId:u.id,externalId:external?.messages?.[0]?.id||external?.key?.id||null,file,destination,sendError:err,sentAt:status==='SENT'?Date.now():null,quoted:replyTo?quoteSnapshot(replyTo,c):null});records.push(rec);pushLog(status==='QUEUED'?'MESSAGE_QUEUED':'MESSAGE_SENT',{conversationId:c.id,messageId:rec.id,destination,error:err})}}
+    else{let external,status='SENT',err=null;if(!official&&cobrancaEnvioSimulado(instanceId))status='SIMULATED';else try{external=official?await sendOfficialText(official,destination,bodyText):await sendText(instanceId,destination,bodyText,{quoted:replyTo})}catch(e){status=official?'FAILED':'QUEUED';err=e.message}const rec=addMessage({conversationId:c.id,direction:'OUT',type:'TEXT',body:bodyText,status,authorId:u.id,externalId:external?.messages?.[0]?.id||external?.key?.id||null,destination,sendError:err,sentAt:status==='SENT'?Date.now():null,quoted:replyTo?quoteSnapshot(replyTo,c):null});records.push(rec);pushLog(status==='QUEUED'?'MESSAGE_QUEUED':'MESSAGE_SENT',{conversationId:c.id,messageId:rec.id,destination,error:err})}
+    for(const rec of records)emit('message.received',{conversationId:c.id,message:rec});emit('conversation.updated',{conversationId:c.id});return json(res,200,{messages:records})
+  }
+  // v0.8.16-R3: endpoint explicito /edit via POST + compatibilidade com PATCH legado.
+  // O POST evita que camadas intermediarias tratem PATCH como rota desconhecida em algumas instalacoes locais.
+  const editRouteExplicit=p.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/edit$/);
+  const editRouteLegacy=p.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)$/);
+  routeMatch=(method==='POST'&&editRouteExplicit)?editRouteExplicit:(method==='PATCH'&&editRouteLegacy)?editRouteLegacy:null;
+  if(routeMatch){
+    const c=findConversation(routeMatch[1]),m=findMessage(routeMatch[2]);if(!c)return json(res,404,{error:'Conversa não encontrada'});if(!m||m.conversationId!==c.id)return json(res,404,{error:'Mensagem não encontrada'});if(!canSeeConversation(u,c))return json(res,403,{error:'Sem acesso a esta conversa'});if(m.direction!=='OUT'||m.type!=='TEXT')return json(res,409,{error:`Somente mensagens de texto enviadas pelo ${nomeProduto()} podem ser editadas`});if(!m.externalId)return json(res,409,{error:'Esta mensagem ainda não possui ID do WhatsApp e não pode ser editada'});const instanceId=resolveConversationInstance(c,{reason:'MESSAGE_EDIT'});if(isOfficialInstance(instanceId))return json(res,409,{error:'A edição de mensagens ainda não está disponível para a API Oficial (Meta)'});if(!c.isGroup&&c.ownerId&&c.ownerId!==u.id&&u.role==='AGENT')return json(res,403,{error:'Este atendimento pertence a outro atendente'});const b=await body(req),text=String(b.body||'').trim();if(!text)return json(res,400,{error:'A mensagem editada não pode ficar vazia'});if(text===String(m.body||''))return json(res,200,{message:m,unchanged:true});const ct=findContact(c.contactId),destination=whatsappDestination(c,ct),previousBody=String(m.body||'');try{await editText(instanceId,destination,m,text)}catch(e){pushLog('MESSAGE_EDIT_SEND_FAILED',{conversationId:c.id,messageId:m.id,externalId:m.externalId,by:u.id,error:e.message});return json(res,400,{error:`Não foi possível editar no WhatsApp: ${e.message}`})}const now=Date.now(),history=Array.isArray(m.editHistory)?m.editHistory:[];history.push({body:previousBody,at:now,source:'BALBINO',editor:u.id,editorName:u.name});m.editHistory=history.slice(-20);m.body=text;m.editedAt=now;m.editedBy=u.id;m.meta={...(m.meta||{}),edited:true,editSource:'BALBINO',editCount:m.editHistory.length};save();pushLog('MESSAGE_EDITED',{conversationId:c.id,messageId:m.id,externalId:m.externalId,by:u.id,editorName:u.name});emit('message.status',{conversationId:c.id,message:m});emit('conversation.updated',{conversationId:c.id,messageEdited:true});return json(res,200,{message:m})
+  }
+  routeMatch=p.match(/^\/api\/conversations\/([^/]+)\/poll$/);if(routeMatch&&method==='POST'){
+    const c=findConversation(routeMatch[1]);if(!c)return json(res,404,{error:'Conversa não encontrada'});if(!canSeeConversation(u,c))return json(res,403,{error:'Sem acesso a esta conversa'});if(c.isChannel)return json(res,409,{error:'Canais são somente leitura nesta versão'});if(c.status==='CLOSED')return json(res,409,{error:'Atendimento finalizado. Reabra antes de enviar uma enquete.'});if(!c.isGroup&&!c.ownerId)return json(res,409,{error:'Este atendimento está na fila. Assuma antes de responder.'});if(!c.isGroup&&c.ownerId!==u.id&&u.role==='AGENT')return json(res,409,{error:'Este atendimento pertence a outro atendente.'});const held=c.isGroup?null:activeLock(c.id);if(!c.isGroup&&all().settings.lockConversation!==false&&held&&held.userId!==u.id)return json(res,409,{error:`Conversa em atendimento por ${held.userName}. Aguarde ou transfira o atendimento.`});const instanceId=resolveConversationInstance(c,{reason:'POLL_SEND'});if(isOfficialInstance(instanceId))return json(res,409,{error:'A API Oficial não oferece a enquete nativa do WhatsApp neste módulo. Use uma conexão WhatsApp Web ou uma mensagem interativa oficial.'});const b=await body(req),name=String(b.name||'').trim(),options=[...new Set((Array.isArray(b.options)?b.options:[]).map(v=>String(v||'').trim()).filter(Boolean))].slice(0,12),selectableCount=Math.max(1,Math.min(options.length,Number(b.selectableCount)||1));if(!name)return json(res,400,{error:'Digite a pergunta da enquete'});if(options.length<2)return json(res,400,{error:'Informe pelo menos duas opções'});const ct=findContact(c.contactId),destination=whatsappDestination(c,ct);try{const external=await sendPoll(instanceId,destination,name,options,selectableCount);const rec=addMessage({conversationId:c.id,direction:'OUT',type:'POLL',body:name,status:'SENT',authorId:u.id,externalId:external?.key?.id||null,destination,sentAt:Date.now(),meta:{name,options,selectableCount,messageSecret:external?.message?.messageContextInfo?.messageSecret?Buffer.from(external.message.messageContextInfo.messageSecret).toString('base64'):null,pollVotes:{},pollResults:[]}});pushLog('POLL_SENT',{conversationId:c.id,messageId:rec.id,destination,options:options.length,selectableCount});emit('message.received',{conversationId:c.id,message:rec});emit('conversation.updated',{conversationId:c.id});return json(res,200,{message:rec})}catch(e){pushLog('POLL_SEND_FAILED',{conversationId:c.id,error:e.message});return json(res,400,{error:`Não foi possível enviar a enquete: ${e.message}`})}
+  }
+  routeMatch=p.match(/^\/api\/conversations\/([^/]+)\/contact-card$/);if(routeMatch&&method==='POST'){
+    const c=findConversation(routeMatch[1]);if(!c)return json(res,404,{error:'Conversa não encontrada'});if(!canSeeConversation(u,c))return json(res,403,{error:'Sem acesso a esta conversa'});if(c.isChannel)return json(res,409,{error:'Canais são somente leitura nesta versão'});if(c.status==='CLOSED')return json(res,409,{error:'Atendimento finalizado. Reabra antes de enviar um contato.'});if(!c.isGroup&&!c.ownerId)return json(res,409,{error:'Este atendimento está na fila. Assuma antes de responder.'});if(!c.isGroup&&c.ownerId!==u.id&&u.role==='AGENT')return json(res,409,{error:'Este atendimento pertence a outro atendente.'});const held=c.isGroup?null:activeLock(c.id);if(!c.isGroup&&all().settings.lockConversation!==false&&held&&held.userId!==u.id)return json(res,409,{error:`Conversa em atendimento por ${held.userName}. Aguarde ou transfira o atendimento.`});
+    if(isOfficialInstance(c.instanceId))return json(res,409,{error:'Envio de cartão de contato pela API Oficial ainda não está habilitado.'});const b=await body(req),shared=all().contacts.find(x=>x.id===b.contactId&&!x.isGroup&&!x.isChannel);if(!shared)return json(res,404,{error:'Contato para compartilhar não encontrado'});const phone=String(shared.phone||'').replace(/\D/g,'');if(!phone)return json(res,400,{error:'O contato escolhido não possui telefone'});const ct=findContact(c.contactId),instanceId=resolveConversationInstance(c,{reason:'CONTACT_SEND'}),destination=whatsappDestination(c,ct);let external,status='SENT',err=null,meta={displayName:shared.name||phone,phone};try{external=await sendContact(instanceId,destination,{displayName:shared.name||phone,phone});if(external?.__contactMeta)meta=external.__contactMeta}catch(e){status='QUEUED';err=e.message}const rec=addMessage({conversationId:c.id,direction:'OUT',type:'CONTACT',body:`Contato: ${shared.name||phone}`,status,authorId:u.id,externalId:external?.messages?.[0]?.id||external?.key?.id||null,destination,sendError:err,sentAt:status==='SENT'?Date.now():null,meta:{displayName:meta.displayName||shared.name||phone,vcard:meta.vcard||'',contactCard:{displayName:shared.name||phone,phone}}});pushLog(status==='QUEUED'?'MESSAGE_QUEUED':'MESSAGE_SENT',{conversationId:c.id,messageId:rec.id,destination,type:'CONTACT',error:err});emit('message.received',{conversationId:c.id,message:rec});emit('conversation.updated',{conversationId:c.id});return json(res,200,{message:rec})
+  }
+  routeMatch=p.match(/^\/api\/conversations\/([^/]+)\/typing$/);if(routeMatch&&method==='POST'){const c=findConversation(routeMatch[1]);if(!c)return json(res,404,{error:'Conversa não encontrada'});if(!c.ownerId||c.ownerId!==u.id)return json(res,200,{ok:true,ignored:true});const b=await body(req),ct=findContact(c.contactId),instanceId=resolveConversationInstance(c,{reason:'TYPING'});acquireConversationLock(c.id,u);if(isOfficialInstance(instanceId))return json(res,200,{ok:true,ignored:true,provider:'CLOUD_API'});await setTyping(instanceId,whatsappDestination(c,ct),Boolean(b.on));return json(res,200,{ok:true})}
+  routeMatch=p.match(/^\/api\/conversations\/([^/]+)\/transfer$/);if(routeMatch&&method==='POST'){
+    const c=findConversation(routeMatch[1]);if(!c)return json(res,404,{error:'Conversa não encontrada'});
+    if(!canSeeConversation(u,c))return json(res,403,{error:'Sem acesso a este atendimento'});
+    if(u.role==='AGENT'&&c.ownerId!==u.id)return json(res,403,{error:'Somente o responsável atual pode transferir este atendimento'});
+    const b=await body(req),previousOwnerId=c.ownerId||null;
+    if(c.isGroup&&!b.ownerId)return json(res,409,{error:'Grupos precisam de um responsável. Selecione um atendente para transferir o grupo.'});
+    let targetOwner=null;
+    if(b.ownerId){
+      targetOwner=all().users.find(x=>x.id===b.ownerId&&x.active!==false);
+      if(!targetOwner)return json(res,400,{error:'Atendente de destino inválido ou inativo'});if(!userCanConnection(targetOwner,c.instanceId))return json(res,400,{error:'O atendente selecionado não possui acesso à conexão desta conversa'});
+    }
+    if(b.departmentId){
+      const dept=all().departments.find(x=>x.id===b.departmentId&&x.active!==false);
+      if(!dept)return json(res,400,{error:'Setor de destino inválido ou inativo'});if(targetOwner&&!userCanDepartment(targetOwner,dept.id))return json(res,400,{error:'O atendente selecionado não possui acesso a esta fila/setor'});
+      c.departmentId=dept.id;
+    }else if(targetOwner?.departmentId)c.departmentId=targetOwner.departmentId;
+    if(targetOwner?.departmentId&&b.departmentId&&targetOwner.departmentId!==b.departmentId){
+      return json(res,400,{error:'O atendente selecionado não pertence ao setor escolhido'});
+    }
+    // Uma transferência muda a posse do atendimento. O lock do atendente anterior
+    // nunca pode sobreviver à transferência, senão o novo responsável fica bloqueado.
+    conversationLocks.delete(c.id);
+    c.ownerId=targetOwner?.id||null;
+    if(b.priority)c.priority=b.priority;
+    c.status=c.ownerId?'OPEN':'WAITING';
+    if(c.ownerId){
+      c.claimedAt=Date.now();c.claimedBy=c.ownerId;delete c.queuedAt;
+    }else{
+      c.queuedAt=Date.now();c.triageStatus='ROUTED';c.queueRoutedAt=c.queueRoutedAt||Date.now();delete c.claimedAt;delete c.claimedBy;
+    }
+    c.updatedAt=Date.now();c.lastTransferredAt=Date.now();c.lastTransferredBy=u.id;
+    if(b.note)addMessage({conversationId:c.id,direction:'NOTE',type:'NOTE',body:b.note,status:'INTERNAL',authorId:u.id});
+    save();
+    const ownerName=targetOwner?.name||null;
+    pushLog('CONVERSATION_TRANSFERRED',{conversationId:c.id,previousOwnerId,departmentId:c.departmentId,ownerId:c.ownerId,ownerName,status:c.status,by:u.id});
+    emit('conversation.updated',{conversationId:c.id,previousOwnerId,ownerId:c.ownerId,ownerName,departmentId:c.departmentId,status:c.status,transferredBy:u.id});
+    return json(res,200,hydrated(c));
+  }
+  routeMatch=p.match(/^\/api\/conversations\/([^/]+)\/status$/);if(routeMatch&&method==='POST'){
+    const c=findConversation(routeMatch[1]);if(!c)return json(res,404,{error:'Conversa não encontrada'});if(!canSeeConversation(u,c))return json(res,403,{error:'Sem acesso a este atendimento'});if(u.role==='AGENT'&&c.ownerId&&c.ownerId!==u.id)return json(res,403,{error:'Somente o responsável atual pode alterar o status'});
+    const b=await body(req),next=String(b.status||c.status).toUpperCase(),before=c.status,allowed=['OPEN','WAITING','WAITING_CUSTOMER','WAITING_INTERNAL','CLOSED'];if(!allowed.includes(next))return json(res,400,{error:'Status de atendimento inválido'});
+    if(['WAITING_CUSTOMER','WAITING_INTERNAL'].includes(next)&&!c.ownerId)return json(res,409,{error:'Assuma o atendimento antes de colocá-lo em espera.'});
+    c.status=next;c.updatedAt=Date.now();
+    if(next==='WAITING'){c.ownerId=null;c.queuedAt=Date.now();conversationLocks.delete(c.id);delete c.claimedAt;delete c.claimedBy}
+    if(next==='WAITING_CUSTOMER'){c.waitingCustomerAt=Date.now();delete c.waitingInternalAt}
+    if(next==='WAITING_INTERNAL'){c.waitingInternalAt=Date.now();delete c.waitingCustomerAt}
+    if(next==='OPEN'){delete c.waitingCustomerAt;delete c.waitingInternalAt;if(c.ownerId){c.claimedAt=c.claimedAt||Date.now();c.claimedBy=c.ownerId}delete c.queuedAt}
+    if(next==='CLOSED'){conversationLocks.delete(c.id);c.closeReason=String(b.reason||'Finalizado manualmente').trim();c.closeCategory=String(b.category||'').trim()||null;c.closedAt=Date.now();c.closedByUser=true;c.closedBy=u.id;delete c.archivedAt;delete c.waitingCustomerAt;delete c.waitingInternalAt}else{delete c.closedAt;delete c.closeReason;delete c.closeCategory;delete c.closedBy;c.closedByUser=false;if(before==='HISTORY')c.importedHistory=false}
+    save();pushLog('CONVERSATION_STATUS_CHANGED',{conversationId:c.id,fromStatus:before,status:c.status,reason:c.closeReason,category:c.closeCategory,by:u.id,manual:true});
+    if(before!=='CLOSED'&&c.status==='CLOSED'&&b.suppressCloseAutomation!==true&&all().settings.autoRepliesEnabled!==false&&all().automations.some(a=>a.enabled&&a.trigger==='CONVERSATION_CLOSED')){const ct=findContact(c.contactId),msg=all().settings.csatMessage;try{const result=await sendText(c.instanceId,whatsappDestination(c,ct),msg);addMessage({conversationId:c.id,direction:'OUT',type:'TEXT',body:msg,status:'SENT',auto:'CSAT',externalId:result?.key?.id||null,sentAt:Date.now()})}catch(e){addMessage({conversationId:c.id,direction:'OUT',type:'TEXT',body:msg,status:'QUEUED',auto:'CSAT',sendError:e.message})}c.csatRequestedAt=Date.now();save()}else if(before!=='CLOSED'&&c.status==='CLOSED'&&b.suppressCloseAutomation===true){pushLog('CLOSE_AUTOMATION_SKIPPED',{conversationId:c.id,reason:'MANUAL_CLOSE_MODE',by:u.id})}else if(before!=='CLOSED'&&c.status==='CLOSED'&&all().settings.autoRepliesEnabled===false){pushLog('CSAT_SKIPPED',{conversationId:c.id,reason:'AUTO_REPLIES_DISABLED'})}
+    emit('conversation.updated',{conversationId:c.id,status:c.status,ownerId:c.ownerId||null});return json(res,200,hydrated(c))
+  }
+
+
+  routeMatch=p.match(/^\/api\/conversations\/([^/]+)$/);if(routeMatch&&method==='DELETE'){
+    if(!requireAdmin(u,res))return;
+    const c=findConversation(routeMatch[1]);if(!c)return json(res,404,{error:'Conversa não encontrada'});
+    const contact=findContact(c.contactId),messages=[...messagesForConversation(c.id)];
+    // Apaga somente os arquivos locais exclusivos desta conversa. O contato/CRM é preservado.
+    for(const m of messages){const fp=m?.file?.path;if(!fp)continue;try{const disk=uploadDiskPath(fp);if(disk.startsWith(path.resolve(uploadDir))&&fs.existsSync(disk))fs.unlinkSync(disk)}catch{}}
+    conversationLocks.delete(c.id);
+    const removed=removeConversation(c.id);
+    pushLog('CONVERSATION_DELETED',{conversationId:c.id,contactId:c.contactId,contactName:contact?.name||null,messageCount:removed?.messages?.length||0,by:u.id,byName:u.name});
+    emit('conversation.deleted',{conversationId:c.id,contactId:c.contactId,deletedBy:u.id});
+    emit('conversation.updated',{conversationId:c.id,deleted:true});
+    return json(res,200,{ok:true,conversationId:c.id,contactId:c.contactId,messageCount:removed?.messages?.length||0});
+  }
+  routeMatch=p.match(/^\/api\/messages\/([^/]+)\/favorite$/);if(routeMatch&&method==='POST'){const msg=findMessage(routeMatch[1]);if(!msg)return json(res,404,{error:'Mensagem não encontrada'});const b=await body(req);msg.favorite=b.favorite!==false;save();emit('message.status',{conversationId:msg.conversationId,message:msg});return json(res,200,msg)}
+  routeMatch=p.match(/^\/api\/messages\/([^/]+)\/reaction$/);if(routeMatch&&method==='POST'){const msg=findMessage(routeMatch[1]);if(!msg)return json(res,404,{error:'Mensagem não encontrada'});const c=findConversation(msg.conversationId),ct=findContact(c.contactId),b=await body(req),emoji=typeof b.emoji==='string'?b.emoji:'👍',instanceId=resolveConversationInstance(c,{reason:'REACTION_SEND'});if(isOfficialInstance(instanceId))return json(res,409,{error:'Reações pela API Oficial serão habilitadas em uma próxima etapa.'});await sendReaction(instanceId,whatsappDestination(c,ct),msg,emoji);msg.reactions=(msg.reactions||[]).filter(r=>String(r.from||'')!==String(u.id));if(emoji)msg.reactions.push({emoji,from:u.id,at:Date.now()});save();emit('message.status',{conversationId:c.id,message:msg});pushLog('MESSAGE_REACTION_SENT',{conversationId:c.id,messageId:msg.id,userId:u.id,emoji:emoji||null});return json(res,200,msg)}
+
+  routeMatch=p.match(/^\/api\/conversations\/([^/]+)\/search$/);if(routeMatch&&method==='GET'){
+    const c=findConversation(routeMatch[1]);if(!c)return json(res,404,{error:'Conversa não encontrada'});if(!canSeeConversation(u,c))return json(res,403,{error:'Sem acesso a esta conversa'});
+    const q=safeLower(url.searchParams.get('q')||'').trim(),type=String(url.searchParams.get('type')||'ALL').toUpperCase();let rows=messagesForConversation(c.id).filter(m=>m.direction!=='NOTE'||type==='ALL'||type==='TEXT').filter(m=>messageKindMatches(m,type));
+    if(q)rows=rows.filter(m=>safeLower(`${m.body||''} ${m.file?.name||''} ${m.senderName||''}`).includes(q));
+    rows=rows.slice(-120).reverse();return json(res,200,rows.map(m=>({...m,snippet:String(m.body||m.file?.name||String(m.type||'Mensagem')).replace(/\s+/g,' ').slice(0,220)})));
+  }
+  routeMatch=p.match(/^\/api\/conversations\/([^/]+)\/assignment-history$/);if(routeMatch&&method==='GET'){
+    const c=findConversation(routeMatch[1]);if(!c)return json(res,404,{error:'Conversa não encontrada'});if(!canSeeConversation(u,c))return json(res,403,{error:'Sem acesso a esta conversa'});
+    const events=new Set(['CONVERSATION_CLAIMED','CONVERSATION_TRANSFERRED','CONVERSATION_AUTO_ASSIGNED','CONVERSATION_STATUS_CHANGED','CONVERSATION_REACTIVATED_BY_CUSTOMER']);
+    const users=new Map(all().users.map(x=>[x.id,x.name])),deps=new Map(all().departments.map(x=>[x.id,x.name]));
+    const rows=all().logs.filter(l=>events.has(l.event)&&l.data?.conversationId===c.id).slice(0,100).map(l=>({id:l.id,event:l.event,createdAt:l.createdAt,by:l.data?.by||null,byName:users.get(l.data?.by)||null,ownerId:l.data?.ownerId||null,ownerName:l.data?.ownerName||users.get(l.data?.ownerId)||null,previousOwnerId:l.data?.previousOwnerId||null,previousOwnerName:users.get(l.data?.previousOwnerId)||null,departmentId:l.data?.departmentId||null,departmentName:deps.get(l.data?.departmentId)||null,status:l.data?.status||null}));
+    return json(res,200,rows);
+  }
+  routeMatch=p.match(/^\/api\/contacts\/([^/]+)\/history$/);if(routeMatch&&method==='GET'){
+    const ct=findContact(routeMatch[1]);if(!ct)return json(res,404,{error:'Contato não encontrado'});const convs=all().conversations.filter(c=>c.contactId===ct.id).sort((a,b)=>b.updatedAt-a.updatedAt),ids=new Set(convs.map(c=>c.id)),msgs=all().messages.filter(m=>ids.has(m.conversationId));
+    return json(res,200,{contact:ct,classification:contactClassification(ct),conversations:convs.map(c=>hydrated(c)),messageCount:msgs.length,incoming:msgs.filter(m=>m.direction==='IN').length,outgoing:msgs.filter(m=>m.direction==='OUT').length,followups:(all().pendencias||[]).filter(x=>x.contactId===ct.id),deals:all().deals.filter(d=>d.contactId===ct.id)});
+  }
+  if(method==='GET'&&p==='/api/supervisor'){
+    if(!requireSupervisor(u,res))return;const db=all(),now=Date.now(),today=new Date();today.setHours(0,0,0,0);const active=db.conversations.filter(c=>!c.isChannel&&isCurrentOperationalConversation(c)&&isActiveConversation(c)),waiting=active.filter(c=>!c.ownerId||c.status==='WAITING');
+    const lastMsg=new Map(active.map(c=>[c.id,messagesForConversation(c.id).at(-1)||null]));const stale=active.filter(c=>{const m=lastMsg.get(c.id);return m&&now-Number(m.createdAt||0)>15*60000}).map(c=>({...hydrated(c),idleSeconds:secondsSince(lastMsg.get(c.id)?.createdAt)})).sort((a,b)=>b.idleSeconds-a.idleSeconds).slice(0,30);
+    const agentRows=db.users.filter(x=>x.active!==false).map(agent=>{const mine=active.filter(c=>c.ownerId===agent.id),last=Math.max(0,...mine.map(c=>Number(lastMsg.get(c.id)?.createdAt||0)));return{id:agent.id,name:agent.name,role:agent.role,status:agent.status,departmentId:agent.departmentId,departmentName:db.departments.find(d=>d.id===agent.departmentId)?.name||'—',active:mine.length,unread:mine.reduce((a,c)=>a+Number(c.unread||0),0),lastActivityAt:last||null,stale:mine.filter(c=>{const m=lastMsg.get(c.id);return m&&now-Number(m.createdAt||0)>15*60000}).length}});
+    const transfersToday=db.logs.filter(l=>l.event==='CONVERSATION_TRANSFERRED'&&Number(l.createdAt||0)>=today.getTime()).length,closedToday=db.conversations.filter(c=>c.status==='CLOSED'&&Number(c.closedAt||0)>=today.getTime()).length;
+    return json(res,200,{active:active.length,waiting:waiting.length,unread:active.reduce((a,c)=>a+Number(c.unread||0),0),longestWaitSeconds:Math.max(0,...waiting.map(c=>secondsSince(c.queuedAt||c.createdAt))),staleCount:stale.length,transfersToday,closedToday,agents:agentRows,stale,queues:db.departments.map(d=>{const rows=waiting.filter(c=>c.departmentId===d.id);return{id:d.id,name:d.name,waiting:rows.length,longestWaitSeconds:Math.max(0,...rows.map(c=>secondsSince(c.queuedAt||c.createdAt)))}})});
+  }
+  if(method==='POST'&&p==='/api/queue/distribute'){
+    if(!requireSupervisor(u,res))return;const db=all(),b=await body(req),deptId=b.departmentId||null;let assigned=0,remaining=0;const rows=db.conversations.filter(c=>isCurrentOperationalConversation(c)&&isActiveConversation(c)&&!c.ownerId&&!c.isChannel&&c.triageStatus!=='AWAITING_CHOICE'&&(!deptId||c.departmentId===deptId));for(const c of rows){if(assignConversation(c)){assigned++;emit('conversation.updated',{conversationId:c.id,ownerId:c.ownerId,ownerName:db.users.find(x=>x.id===c.ownerId)?.name||null,autoAssigned:true})}else remaining++}save();pushLog('QUEUE_DISTRIBUTION_RUN',{by:u.id,departmentId:deptId,assigned,remaining});return json(res,200,{assigned,remaining});
+  }
+  if(method==='GET'&&p==='/api/contacts')return json(res,200,all().contacts.filter(c=>!c.isGroup&&!c.isChannel));
+  if(method==='POST'&&p==='/api/contacts'){const b=await body(req),phone=String(b.phone||'').replace(/\D/g,'');if(!phone)return json(res,400,{error:'Telefone obrigatório'});if(all().contacts.some(c=>c.phone===phone))return json(res,409,{error:'Telefone já cadastrado'});const c={id:uid('c'),name:b.name||phone,phone,email:b.email||'',company:b.company||'',ownerId:b.ownerId||null,stage:b.stage||'NOVO_LEAD',tags:Array.isArray(b.tags)?b.tags:[],source:b.source||'Manual',notes:b.notes||'',classification:b.classification||'',profileType:b.profileType||b.classification||'',campus:b.campus||'',serviceTopic:b.serviceTopic||'',whatsappJid:null,whatsappJidAlt:null,nameSource:'manual',manualName:true,whatsappName:'',pushName:''};all().contacts.push(c);save();pushLog('CONTACT_CREATED',{contactId:c.id});return json(res,201,c)}
+  routeMatch=p.match(/^\/api\/contacts\/([^/]+)$/);if(routeMatch&&method==='PATCH'){const c=findContact(routeMatch[1]);if(!c)return json(res,404,{error:'Contato não encontrado'});const b=await body(req);Object.assign(c,b,{id:c.id});if(b.phone)c.phone=String(b.phone).replace(/\D/g,'');if(Object.prototype.hasOwnProperty.call(b,'name')){c.nameSource='manual';c.manualName=true}save();pushLog('CONTACT_UPDATED',{contactId:c.id});emit('contacts.updated',{contactId:c.id});emit('conversation.updated',{contactId:c.id,contactNameUpdated:true});return json(res,200,c)}
+  if(routeMatch&&method==='DELETE'){if(!findContact(routeMatch[1]))return json(res,404,{error:'Contato não encontrado'});removeContact(routeMatch[1]);pushLog('CONTACT_DELETED',{contactId:routeMatch[1]});return json(res,200,{ok:true})}
+  if(method==='POST'&&p==='/api/contacts/import'){const ct=req.headers['content-type']||'',buf=await rawBody(req,10*1024*1024);let content=buf.toString('utf8');if(ct.includes('multipart/form-data')){const part=parseMultipart(buf,ct).find(x=>x.filename);if(!part)return json(res,400,{error:'CSV ausente'});content=part.content.toString('utf8')}const rows=parseCSV(content);let created=0,updated=0;for(const row of rows){const phone=String(row.telefone||row.phone||row.celular||'').replace(/\D/g,'');if(!phone)continue;let c=all().contacts.find(x=>x.phone===phone);if(c){Object.assign(c,{name:row.nome||row.name||c.name,email:row.email||c.email,company:row.empresa||row.company||c.company,nameSource:'manual',manualName:true});updated++}else{all().contacts.push({id:uid('c'),name:row.nome||row.name||phone,phone,email:row.email||'',company:row.empresa||row.company||'',ownerId:null,stage:row.etapa||'NOVO_LEAD',tags:(row.tags||'').split(';').filter(Boolean),source:'Importação CSV',notes:'',whatsappJid:null,whatsappJidAlt:null,nameSource:'manual',manualName:true,whatsappName:'',pushName:''});created++}}save();pushLog('CONTACTS_IMPORTED',{created,updated});emit('contacts.updated',{imported:true});emit('conversation.updated',{contactsUpdated:true});return json(res,200,{created,updated})}
+  if(method==='GET'&&p==='/api/contacts/export'){const rows=[['nome','telefone','email','empresa','etapa','tags'],...all().contacts.filter(c=>!c.isGroup&&!c.isChannel).map(c=>[c.name,c.phone,c.email,c.company,c.stage,(c.tags||[]).join(';')])];const csv='\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n');res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="balbino-chat-contatos.csv"'});return res.end(csv)}
+
+
+  // ===== v0.15.0 • Aparência da Rede (modo padrão e cores da marca) =====
+  if(p==='/api/appearance'&&method==='GET'){const a=all().settings.appearanceBrand||{};return json(res,200,{defaultTheme:['light','dark','hybrid'].includes(a.defaultTheme)?a.defaultTheme:'hybrid',accent:a.accent||'#2563eb',highlight:a.highlight||'#22d3ee'})}
+  if(p==='/api/appearance'&&method==='PUT'){if(!requireAdmin(u,res))return;const b=await body(req),hex=v=>/^#[0-9a-f]{6}$/i.test(String(v||''))?String(v):null;const cur=all().settings.appearanceBrand||{};all().settings.appearanceBrand={defaultTheme:['light','dark','hybrid'].includes(b.defaultTheme)?b.defaultTheme:(cur.defaultTheme||'hybrid'),accent:hex(b.accent)||cur.accent||'#2563eb',highlight:hex(b.highlight)||cur.highlight||'#22d3ee'};save();pushLog('APPEARANCE_UPDATED',{userId:u.id,...all().settings.appearanceBrand});return json(res,200,all().settings.appearanceBrand)}
+  // ===== v0.15.0 • FAQ automático =====
+  if(p==='/api/faq/config'&&method==='GET'){const s=all().settings;return json(res,200,{faqPergunta:s.faqPergunta,faqConfirmacao:s.faqConfirmacao,faqResolvido:s.faqResolvido,faqTransferindo:s.faqTransferindo,faqNaoEncontrado:s.faqNaoEncontrado})}
+  if(p==='/api/faq/config'&&method==='PUT'){if(!requireSupervisor(u,res))return;const b=await body(req),s=all().settings;for(const k of['faqPergunta','faqConfirmacao','faqResolvido','faqTransferindo','faqNaoEncontrado'])if(typeof b[k]==='string'&&b[k].trim())s[k]=b[k].slice(0,1500);save();return json(res,200,{ok:true})}
+  if(p==='/api/faq/test'&&method==='POST'){const b=await body(req),r=buscarFaq(b.text||'',all().knowledge||[]);return json(res,200,r?{found:true,score:r.score,id:r.item.id,title:r.item.title,content:r.item.content}:{found:false})}
+  if(p==='/api/faq/misses'&&method==='GET')return json(res,200,(all().knowledgeMisses||[]).slice(0,200));
+  if(p==='/api/faq/misses'&&method==='DELETE'){if(!requireSupervisor(u,res))return;const id=url.searchParams.get('id');all().knowledgeMisses=id?(all().knowledgeMisses||[]).filter(x=>x.id!==id):[];save();return json(res,200,{ok:true})}
+  // ===== v0.15.0 • Histórico contínuo: atendimentos anteriores do mesmo contato =====
+  routeMatch=p.match(/^\/api\/conversations\/([^/]+)\/previous$/);
+  if(routeMatch&&method==='GET'){const c=findConversation(routeMatch[1]);if(!c)return json(res,404,{error:'Conversa não encontrada'});if(!canSeeConversation(u,c))return json(res,403,{error:'Sem acesso a esta conversa'});if(c.isGroup||c.isChannel)return json(res,200,{conversations:[]});const db=all(),limite=Math.min(500,Number(url.searchParams.get('limit')||200));const anteriores=db.conversations.filter(x=>x.id!==c.id&&x.contactId===c.contactId&&!x.isGroup&&!x.isChannel&&Number(x.createdAt||0)<=Number(c.createdAt||Date.now())).sort((a,b)=>Number(a.createdAt||0)-Number(b.createdAt||0));const countOnly=url.searchParams.get('count')==='1';if(countOnly)return json(res,200,{count:anteriores.length});return json(res,200,{conversations:anteriores.map(x=>{const msgs=messagesForConversation(x.id).filter(m=>m?.type!=='POLL_UPDATE');return{id:x.id,protocol:x.protocol,status:x.status,createdAt:x.createdAt,closedAt:x.closedAt||null,closeReason:x.closeReason||null,departmentName:db.departments.find(d=>d.id===x.departmentId)?.name||null,ownerName:db.users.find(v=>v.id===x.ownerId||v.id===x.closedByUser)?.name||null,total:msgs.length,messages:msgs.slice(-limite)}})})}
+  // ===== v0.15.0 • Pendências (substitui Tarefas) =====
+  if(p==='/api/pendencias/tipos'&&method==='GET')return json(res,200,{tipos:all().settings.pendenciaTipos||[],avisoPadrao:all().settings.pendenciaAvisoPadrao||'',pedirDescricao:all().settings.pendenciaPedirDescricao||'',confirmacao:all().settings.pendenciaConfirmacao||''});
+  if(p==='/api/pendencias/tipos'&&method==='PUT'){if(!requireSupervisor(u,res))return;const b=await body(req),db=all();db.settings.pendenciaTipos=(Array.isArray(b.tipos)?b.tipos:[]).slice(0,40).map((t,i)=>({id:String(t.id||uid('pt')).slice(0,60),name:String(t.name||`Tipo ${i+1}`).trim().slice(0,80),departmentId:t.departmentId&&db.departments.some(d=>d.id===t.departmentId)?t.departmentId:null,responsavelId:t.responsavelId&&db.users.some(v=>v.id===t.responsavelId&&v.active!==false)?t.responsavelId:null,prazoDias:Math.max(0,Math.min(365,Number(t.prazoDias)||0)),mensagemConclusao:String(t.mensagemConclusao||'').slice(0,1000),active:t.active!==false})).filter(t=>t.name);if(typeof b.avisoPadrao==='string')db.settings.pendenciaAvisoPadrao=b.avisoPadrao.slice(0,1000);if(typeof b.pedirDescricao==='string'&&b.pedirDescricao.trim())db.settings.pendenciaPedirDescricao=b.pedirDescricao.slice(0,1000);if(typeof b.confirmacao==='string'&&b.confirmacao.trim())db.settings.pendenciaConfirmacao=b.confirmacao.slice(0,1000);save();pushLog('PENDENCIA_TIPOS_UPDATED',{userId:u.id,count:db.settings.pendenciaTipos.length});return json(res,200,{ok:true,tipos:db.settings.pendenciaTipos})}
+  if(p==='/api/pendencias'&&method==='GET'){const db=all(),q=url.searchParams,conversationId=q.get('conversationId'),contactId=q.get('contactId');const rows=(db.pendencias||[]).filter(x=>pendenciaVisivel(u,x)&&(!conversationId||x.conversationId===conversationId)&&(!contactId||x.contactId===contactId)).map(pendenciaPublica).sort((a,b)=>(a.status==='CONCLUIDA')-(b.status==='CONCLUIDA')||String(a.prazo||'9999').localeCompare(String(b.prazo||'9999'))||Number(a.createdAt)-Number(b.createdAt));return json(res,200,{rows,abertas:rows.filter(x=>x.status!=='CONCLUIDA').length,atrasadas:rows.filter(x=>x.atrasada).length})}
+  if(p==='/api/pendencias'&&method==='POST'){const b=await body(req),db=all();const c=b.conversationId?findConversation(b.conversationId):null;if(c&&!canSeeConversation(u,c))return json(res,403,{error:'Sem acesso a esta conversa'});const contactId=c?.contactId||b.contactId||null;if(!contactId||!findContact(contactId))return json(res,400,{error:'Informe a conversa ou o contato'});const titulo=String(b.titulo||'').trim();if(!titulo)return json(res,400,{error:'Informe o que foi pedido'});const tipo=(db.settings.pendenciaTipos||[]).find(t=>t.id===b.tipoId)||null;db.settings.pendenciaSeq=Number(db.settings.pendenciaSeq||0)+1;const x={id:uid('pd'),protocolo:`PEND-${String(db.settings.pendenciaSeq).padStart(4,'0')}`,contactId,conversationId:c?.id||null,departmentId:b.departmentId||tipo?.departmentId||c?.departmentId||null,tipoId:tipo?.id||null,titulo:titulo.slice(0,200),descricao:String(b.descricao||'').slice(0,2000),responsavelId:b.responsavelId===''?null:(b.responsavelId||tipo?.responsavelId||u.id),status:'NOVA',prazo:/^\d{4}-\d{2}-\d{2}$/.test(String(b.prazo||''))?b.prazo:prazoEmDiasSP(tipo?.prazoDias??2),origem:'ATENDENTE',createdAt:Date.now(),createdBy:u.id,updatedAt:Date.now(),concluidaEm:null,historico:[{at:Date.now(),userId:u.id,acao:'CRIADA'}]};db.pendencias.push(x);save();pushLog('PENDENCIA_CREATED',{pendenciaId:x.id,protocolo:x.protocolo,userId:u.id});emit('pendencias.updated',{pendenciaId:x.id,conversationId:x.conversationId});return json(res,201,pendenciaPublica(x))}
+  routeMatch=p.match(/^\/api\/pendencias\/([^/]+)$/);
+  if(routeMatch&&method==='PATCH'){const db=all(),x=(db.pendencias||[]).find(v=>v.id===routeMatch[1]);if(!x||!pendenciaVisivel(u,x))return json(res,404,{error:'Pendência não encontrada'});const b=await body(req),antes=x.status;const STATUS=['NOVA','ANDAMENTO','AGUARDANDO_ALUNO','CONCLUIDA'];if(b.status!=null){if(!STATUS.includes(b.status))return json(res,400,{error:'Status inválido'});x.status=b.status}if(b.titulo!=null&&String(b.titulo).trim())x.titulo=String(b.titulo).trim().slice(0,200);if(b.descricao!=null)x.descricao=String(b.descricao).slice(0,2000);if(b.responsavelId!==undefined)x.responsavelId=b.responsavelId||null;if(b.prazo!==undefined)x.prazo=/^\d{4}-\d{2}-\d{2}$/.test(String(b.prazo||''))?b.prazo:null;if(b.tipoId!==undefined)x.tipoId=b.tipoId||null;x.updatedAt=Date.now();x.historico=[...(x.historico||[]),{at:Date.now(),userId:u.id,acao:antes!==x.status?`STATUS:${antes}>${x.status}`:'EDITADA'}].slice(-50);let aviso=null;if(x.status==='CONCLUIDA'&&antes!=='CONCLUIDA'){x.concluidaEm=Date.now();x.concluidaPor=u.id;if(b.avisar!==false&&!x.avisadoEm)aviso=await avisarConclusaoPendencia(x,u)}else if(x.status!=='CONCLUIDA'){x.concluidaEm=null}save();pushLog('PENDENCIA_UPDATED',{pendenciaId:x.id,from:antes,to:x.status,userId:u.id,aviso});emit('pendencias.updated',{pendenciaId:x.id,conversationId:x.conversationId});return json(res,200,{...pendenciaPublica(x),aviso})}
+  if(routeMatch&&method==='DELETE'){if(!requireSupervisor(u,res))return;const db=all(),x=(db.pendencias||[]).find(v=>v.id===routeMatch[1]);if(!x)return json(res,404,{error:'Pendência não encontrada'});db.pendencias=db.pendencias.filter(v=>v.id!==x.id);save();pushLog('PENDENCIA_DELETED',{pendenciaId:x.id,protocolo:x.protocolo,userId:u.id});emit('pendencias.updated',{pendenciaId:x.id});return json(res,200,{ok:true})}
+
+  if(method==='GET'&&p==='/api/scheduled-messages')return json(res,200,all().scheduledMessages);
+  if(method==='POST'&&p==='/api/scheduled-messages'){const b=await body(req),s={id:uid('sched'),contactId:b.contactId,instanceId:b.instanceId||'principal',text:b.text||'',when:b.when,status:'PENDING',createdBy:u.id,createdAt:Date.now()};if(!s.contactId||!s.text||!s.when)return json(res,400,{error:'Contato, mensagem e data/hora são obrigatórios'});all().scheduledMessages.push(s);save();pushLog('SCHEDULED_MESSAGE_CREATED',{scheduledId:s.id});return json(res,201,s)}
+  routeMatch=p.match(/^\/api\/scheduled-messages\/([^/]+)$/);if(routeMatch&&method==='PATCH'){const s=all().scheduledMessages.find(x=>x.id===routeMatch[1]);if(!s)return json(res,404,{error:'Agendamento não encontrado'});Object.assign(s,await body(req),{id:s.id});save();return json(res,200,s)}if(routeMatch&&method==='DELETE'){all().scheduledMessages=all().scheduledMessages.filter(x=>x.id!==routeMatch[1]);save();return json(res,200,{ok:true})}
+
+  if(method==='GET'&&p==='/api/automations')return json(res,200,all().automations);
+  if(method==='POST'&&p==='/api/automations'){const b=await body(req),a={id:uid('a'),name:b.name||'Nova automação',trigger:b.trigger||'MANUAL',action:b.action||'NONE',enabled:b.enabled!==false};all().automations.push(a);save();pushLog('AUTOMATION_CREATED',{automationId:a.id});return json(res,201,a)}
+  routeMatch=p.match(/^\/api\/automations\/([^/]+)$/);if(routeMatch&&method==='PATCH'){const a=all().automations.find(x=>x.id===routeMatch[1]);if(!a)return json(res,404,{error:'Automação não encontrada'});Object.assign(a,await body(req),{id:a.id});save();return json(res,200,a)}if(routeMatch&&method==='DELETE'){all().automations=all().automations.filter(x=>x.id!==routeMatch[1]);save();return json(res,200,{ok:true})}
+
+  if(method==='GET'&&p==='/api/quick-replies')return json(res,200,all().quickReplies);
+  if(method==='POST'&&p==='/api/quick-replies'){if(!requireSupervisor(u,res))return;const b=await body(req),q={id:uid('q'),shortcut:b.shortcut?.startsWith('/')?b.shortcut:`/${b.shortcut||'atalho'}`,text:b.text||'',category:String(b.category||'Geral').trim()||'Geral',departmentId:b.departmentId||null,favorite:b.favorite===true,createdBy:u.id,createdAt:Date.now()};all().quickReplies.push(q);save();return json(res,201,q)}
+  routeMatch=p.match(/^\/api\/quick-replies\/([^/]+)$/);if(routeMatch&&method==='PATCH'){if(!requireSupervisor(u,res))return;const q=all().quickReplies.find(x=>x.id===routeMatch[1]);if(!q)return json(res,404,{error:'Resposta rápida não encontrada'});Object.assign(q,await body(req),{id:q.id});save();return json(res,200,q)}if(routeMatch&&method==='DELETE'){if(!requireSupervisor(u,res))return;all().quickReplies=all().quickReplies.filter(x=>x.id!==routeMatch[1]);save();return json(res,200,{ok:true})}
+
+  if(method==='GET'&&p==='/api/knowledge')return json(res,200,all().knowledge);
+  if(method==='POST'&&p==='/api/knowledge'){const b=await body(req),k={id:uid('kb'),title:b.title||'Novo conteúdo',category:b.category||'Geral',keywords:String(b.keywords||'').slice(0,1000),departmentId:b.departmentId||null,autoReply:b.autoReply!==false,content:b.content||'',active:b.active!==false,updatedAt:Date.now()};all().knowledge.push(k);save();return json(res,201,k)}
+  routeMatch=p.match(/^\/api\/knowledge\/([^/]+)$/);if(routeMatch&&method==='PATCH'){const k=all().knowledge.find(x=>x.id===routeMatch[1]);if(!k)return json(res,404,{error:'Conteúdo não encontrado'});Object.assign(k,await body(req),{id:k.id,updatedAt:Date.now()});save();return json(res,200,k)}if(routeMatch&&method==='DELETE'){all().knowledge=all().knowledge.filter(x=>x.id!==routeMatch[1]);save();return json(res,200,{ok:true})}
+  if(method==='POST'&&p==='/api/ai/suggest'){const b=await body(req);return json(res,200,{text:localAI(b.text||'')})}
+  if(method==='POST'&&p==='/api/ai/summary'){const b=await body(req),c=findConversation(b.conversationId);if(!c)return json(res,404,{error:'Conversa não encontrada'});return json(res,200,{text:summaryForConversation(hydrated(c))})}
+
+  if(method==='GET'&&p==='/api/media'){const visible=new Set(all().conversations.filter(c=>canSeeConversation(u,c)).map(c=>c.id)),rows=all().messages.filter(x=>x.file&&visible.has(x.conversationId)).sort((a,b)=>b.createdAt-a.createdAt).map(hydrateMessage);return json(res,200,rows)}
+  if(method==='GET'&&p==='/api/reports'){if(!requireSupervisor(u,res))return;const db=all(),convs=db.conversations.filter(c=>!c.isChannel&&isCurrentOperationalConversation(c)&&!isHistoryConversation(c)),total=convs.length,closed=convs.filter(c=>c.status==='CLOSED'),ratings=closed.filter(c=>c.csat).map(c=>c.csat);let firstResponse=[];for(const c of convs){const ms=messagesForConversation(c.id).sort((a,b)=>a.createdAt-b.createdAt),firstIn=ms.find(x=>x.direction==='IN');if(firstIn){const firstOut=ms.find(x=>x.direction==='OUT'&&x.createdAt>=firstIn.createdAt&&!x.auto&&!String(x.authorId||'').startsWith('api:'));if(firstOut)firstResponse.push(firstOut.createdAt-firstIn.createdAt)}}const avgResponse=firstResponse.length?Math.round(firstResponse.reduce((a,b)=>a+b,0)/firstResponse.length/1000):0,avgResolution=closed.length?Math.round(closed.filter(c=>c.closedAt).reduce((a,c)=>a+(c.closedAt-c.createdAt),0)/Math.max(1,closed.filter(c=>c.closedAt).length)/1000):0;const leads=[],agents=db.users.map(agent=>{const assigned=convs.filter(c=>c.ownerId===agent.id),resolved=assigned.filter(c=>c.status==='CLOSED'),rs=resolved.filter(c=>c.csat).map(c=>c.csat),ownedLeads=leads.filter(l=>l.assignedUserId===agent.id),treatedLeads=ownedLeads.filter(l=>!l.neverTreated),enrolled=ownedLeads.filter(l=>l.status==='MATRICULADO'),interested=ownedLeads.filter(l=>['INTERESSADO','MATRICULA_ANDAMENTO','MATRICULADO'].includes(l.status));return{id:agent.id,name:agent.name,role:agent.role,assigned:assigned.length,resolved:resolved.length,csat:rs.length?(rs.reduce((a,b)=>a+b,0)/rs.length).toFixed(1):'—',leadAssigned:ownedLeads.length,leadTreated:treatedLeads.length,leadInterested:interested.length,leadEnrolled:enrolled.length,leadTreatmentRate:ownedLeads.length?Math.round(treatedLeads.length/ownedLeads.length*100):0,leadConversionRate:ownedLeads.length?Math.round(enrolled.length/ownedLeads.length*100):0}}),leadTotals={total:leads.length,neverTreated:leads.filter(x=>x.neverTreated).length,treated:leads.filter(x=>!x.neverTreated).length,interested:leads.filter(x=>x.status==='INTERESSADO').length,enrollmentInProgress:leads.filter(x=>x.status==='MATRICULA_ANDAMENTO').length,enrolled:leads.filter(x=>x.status==='MATRICULADO').length,lost:leads.filter(x=>x.status==='PERDIDO').length,overdue:leads.filter(x=>x.overdue).length,unassigned:leads.filter(x=>!x.assignedUserId).length};leadTotals.treatmentRate=leadTotals.total?Math.round(leadTotals.treated/leadTotals.total*100):0;leadTotals.conversionRate=leadTotals.total?Math.round(leadTotals.enrolled/leadTotals.total*100):0;const byBase=(db.leadBases||[]).map(base=>{const ids=new Set((db.leadEntries||[]).filter(e=>e.baseId===base.id).map(e=>e.contactId)),rows=leads.filter(l=>ids.has(l.contactId));return{id:base.id,name:base.name,total:rows.length,treated:rows.filter(l=>!l.neverTreated).length,interested:rows.filter(l=>l.status==='INTERESSADO').length,enrolled:rows.filter(l=>l.status==='MATRICULADO').length,conversionRate:rows.length?Math.round(rows.filter(l=>l.status==='MATRICULADO').length/rows.length*100):0}}).sort((a,b)=>b.total-a.total).slice(0,20);return json(res,200,{total,open:total-closed.length,closed:closed.length,unread:convs.reduce((a,c)=>a+(c.unread||0),0),avgFirstResponseSeconds:avgResponse,avgResolutionSeconds:avgResolution,csat:ratings.length?(ratings.reduce((a,b)=>a+b,0)/ratings.length).toFixed(1):'—',agents,byDepartment:db.departments.map(d=>({name:d.name,count:convs.filter(c=>c.departmentId===d.id).length,open:convs.filter(c=>c.departmentId===d.id&&c.status!=='CLOSED').length})),leads:leadTotals,leadByBase:byBase})}
+
+  if(method==='GET'&&p==='/api/team'){const db=all(),admin=u.role==='SUPER_ADMIN',catalog=accessCatalog(db);const departments=admin?db.departments:db.departments.filter(d=>userCanDepartment(u,d.id)),connections=(admin?catalog.connections:catalog.connections.filter(c=>userCanConnection(u,c.id))),groups=(admin?catalog.groups:catalog.groups.filter(g=>userCanConnection(u,g.instanceId)&&userCanGroup(u,g)));return json(res,200,{users:db.users.map(publicUser),departments,connections,groups,accessCatalog:{loaded:true,generatedAt:catalog.generatedAt}})}
+  if(method==='GET'&&p==='/api/access/catalog'){if(!requireSupervisor(u,res))return;const catalog=accessCatalog(all());const admin=u.role==='SUPER_ADMIN';return json(res,200,{loaded:true,connections:admin?catalog.connections:catalog.connections.filter(c=>userCanConnection(u,c.id)),groups:admin?catalog.groups:catalog.groups.filter(g=>userCanConnection(u,g.instanceId)&&userCanGroup(u,g)),departments:admin?catalog.departments:catalog.departments.filter(d=>userCanDepartment(u,d.id)),generatedAt:catalog.generatedAt})}
+  if(method==='POST'&&p==='/api/access/catalog/sync'){if(!requireAdmin(u,res))return;const b=await body(req),db=all(),known=accessConnectionCatalog(db),requested=String(b.instanceId||'').trim(),targets=(requested?known.filter(c=>c.id===requested):known).filter(c=>db.connections.some(x=>x.id===c.id));const results=[];for(const c of targets){try{const groups=await syncWhatsAppGroups(c.id);results.push({instanceId:c.id,ok:true,groups:groups.length})}catch(e){results.push({instanceId:c.id,ok:false,error:String(e.message||e)})}}const catalog=accessCatalog(all());return json(res,200,{ok:results.some(r=>r.ok),results,catalog:{loaded:true,...catalog}})}
+  if(method==='POST'&&p==='/api/users'){if(!requireAdmin(u,res))return;const b=await body(req),password=String(b.password||'');if(password.length<12)return json(res,400,{error:'A senha do usuário deve ter pelo menos 12 caracteres'});const salt=crypto.randomBytes(16).toString('hex'),x={id:uid('u'),name:b.name||'Novo usuário',username:b.username||`user${Date.now()}`,role:b.role||'AGENT',status:'OFFLINE',departmentId:b.departmentId||null,email:b.email||'',active:true,access:b.access||{allConnections:true,connectionIds:[],allDepartments:true,departmentIds:[],allGroups:true,groupIds:[]},passwordSalt:salt,passwordHash:hashPassword(password,salt)};all().users.push(x);save();pushLog('USER_CREATED',{userId:x.id});return json(res,201,publicUser(x))}
+  routeMatch=p.match(/^\/api\/users\/([^/]+)$/);if(routeMatch&&method==='PATCH'){if(!requireAdmin(u,res))return;const x=all().users.find(v=>v.id===routeMatch[1]);if(!x)return json(res,404,{error:'Usuário não encontrado'});const patch=await body(req);if(patch.password&&String(patch.password).length<12)return json(res,400,{error:'A senha do usuário deve ter pelo menos 12 caracteres'});if(patch.access){const catalog=accessCatalog(all()),validConnections=new Set(catalog.connections.map(c=>c.id)),validGroups=new Set(catalog.groups.flatMap(g=>[g.id,...(g.aliases||[])]));patch.access={allConnections:patch.access.allConnections!==false,connectionIds:Array.isArray(patch.access.connectionIds)?patch.access.connectionIds.filter(id=>validConnections.has(id)):[],allDepartments:patch.access.allDepartments!==false,departmentIds:Array.isArray(patch.access.departmentIds)?patch.access.departmentIds.filter(id=>all().departments.some(d=>d.id===id)):[],allGroups:patch.access.allGroups!==false,groupIds:Array.isArray(patch.access.groupIds)?[...new Set(patch.access.groupIds.filter(id=>validGroups.has(id)))]:[]}}if(patch.password){x.passwordSalt=crypto.randomBytes(16).toString('hex');x.passwordHash=hashPassword(patch.password,x.passwordSalt);delete patch.password}Object.assign(x,patch,{id:x.id});save();return json(res,200,publicUser(x))}if(routeMatch&&method==='DELETE'){if(!requireAdmin(u,res))return;if(routeMatch[1]==='u-admin')return json(res,400,{error:'Administrador principal não pode ser excluído'});all().users=all().users.filter(x=>x.id!==routeMatch[1]);save();return json(res,200,{ok:true})}
+  if(method==='POST'&&p==='/api/departments'){if(!requireAdmin(u,res))return;const b=await body(req),d={id:uid('d'),name:String(b.name||'Novo setor').trim(),distribution:b.distribution||'LEAST_BUSY',active:b.active!==false,color:/^#[0-9a-f]{6}$/i.test(String(b.color||''))?String(b.color):'#2563eb',order:Number.isFinite(Number(b.order))?Number(b.order):(all().departments.length+1),greeting:String(b.greeting||'').trim().slice(0,2000),closeTicket:Boolean(b.closeTicket)};all().departments.push(d);save();pushLog('DEPARTMENT_CREATED',{id:d.id,name:d.name,by:u.id});return json(res,201,d)}
+  routeMatch=p.match(/^\/api\/departments\/([^/]+)$/);if(routeMatch&&method==='PATCH'){if(!requireAdmin(u,res))return;const d=all().departments.find(v=>v.id===routeMatch[1]);if(!d)return json(res,404,{error:'Setor não encontrado'});Object.assign(d,await body(req),{id:d.id});save();return json(res,200,d)}if(routeMatch&&method==='DELETE'){if(!requireAdmin(u,res))return;const activeInDepartment=all().conversations.filter(c=>c.departmentId===routeMatch[1]&&isCurrentOperationalConversation(c)&&isActiveConversation(c));if(activeInDepartment.length)return json(res,409,{error:`Esta fila possui ${activeInDepartment.length} atendimento${activeInDepartment.length===1?'':'s'} ativo${activeInDepartment.length===1?'':'s'} na operação atual. Finalize ou transfira antes de excluir.`,count:activeInDepartment.length});all().departments=all().departments.filter(x=>x.id!==routeMatch[1]);save();pushLog('DEPARTMENT_DELETED',{departmentId:routeMatch[1],by:u.id});return json(res,200,{ok:true})}
+
+  routeMatch=p.match(/^\/api\/connections\/([^/]+)\/interactive-test$/);if(routeMatch&&method==='POST'){if(!requireAdmin(u,res))return;try{return json(res,200,{ok:true,capabilities:await testInteractiveCapabilities(routeMatch[1])})}catch(e){return json(res,500,{error:e.message})}}
+
+  if(method==='POST'&&p==='/api/system/repair-multiconnection'){if(!requireAdmin(u,res))return;try{const report=repairMultiConnectionData({reason:`manual:${u.id||u.username||'admin'}`,mergeConversations:true});pushLog('MULTICONNECTION_REPAIR_MANUAL',{by:u.id||u.username,report});return json(res,200,{ok:true,report})}catch(e){pushLog('MULTICONNECTION_REPAIR_MANUAL_ERROR',{by:u.id||u.username,error:String(e?.message||e)});return json(res,500,{error:e.message})}}
+
+  if(method==='GET'&&p==='/api/settings')return json(res,200,all().settings);
+  if(method==='PATCH'&&p==='/api/settings'){if(!requireAdmin(u,res))return;const b=await body(req);if(Array.isArray(b.queueRoutingOptions)){const seen=new Set();b.queueRoutingOptions=b.queueRoutingOptions.map((o,i)=>({key:String(o?.key||i+1).trim(),label:String(o?.label||'').trim(),departmentId:o?.departmentId||null})).filter(o=>o.key&&o.label&&o.departmentId&&all().departments.some(d=>d.id===o.departmentId&&d.active!==false)&&!seen.has(o.key)&&(seen.add(o.key),true)).slice(0,12)}if(Array.isArray(b.queueFlowNodes)){const allowed=new Set(['AUTO','BUTTONS','LIST','TEXT']),cleanId=(value,fallback)=>String(value||fallback).trim().replace(/[^a-zA-Z0-9_-]+/g,'_').slice(0,64)||fallback;b.queueFlowNodes=b.queueFlowNodes.slice(0,30).map((node,ni)=>{const id=cleanId(node?.id,`etapa_${ni+1}`);return{id,title:String(node?.title||`Etapa ${ni+1}`).trim().slice(0,500),interaction:allowed.has(String(node?.interaction||'AUTO').toUpperCase())?String(node.interaction||'AUTO').toUpperCase():'AUTO',captureKey:cleanId(node?.captureKey||'','').slice(0,40),options:(Array.isArray(node?.options)?node.options:[]).slice(0,20).map((o,oi)=>({id:cleanId(o?.id,`${id}_opcao_${oi+1}`),label:String(o?.label||'').trim().slice(0,80),value:String(o?.value||o?.label||'').trim().slice(0,120),afterMessage:String(o?.afterMessage||'').trim().slice(0,1000),nextNodeId:o?.nextNodeId?cleanId(o.nextNodeId,''):null,departmentId:o?.departmentId||null,pendenciaTipoId:o?.pendenciaTipoId&&(all().settings.pendenciaTipos||[]).some(t=>t.id===o.pendenciaTipoId)?String(o.pendenciaTipoId):null,faqBot:Boolean(o?.faqBot)})).filter(o=>o.label)}}).filter(n=>n.id&&n.title&&n.options.length);const ids=new Set(b.queueFlowNodes.map(n=>n.id));for(const node of b.queueFlowNodes)for(const opt of node.options){if(opt.nextNodeId&&!ids.has(opt.nextNodeId))opt.nextNodeId=null;if(opt.departmentId&&!all().departments.some(d=>d.id===opt.departmentId&&d.active!==false))opt.departmentId=null}if(!ids.has(b.queueFlowStartNodeId))b.queueFlowStartNodeId=b.queueFlowNodes[0]?.id||null}if(b.queueInteractivePreference&&!['AUTO','BUTTONS','LIST','TEXT'].includes(String(b.queueInteractivePreference).toUpperCase()))delete b.queueInteractivePreference;if(b.queueInteractiveFallback&&!['TEXT_LABELS','HUMAN_QUEUE'].includes(String(b.queueInteractiveFallback).toUpperCase()))delete b.queueInteractiveFallback;if(b.queueFlowLayout&&typeof b.queueFlowLayout==='object'){const clean={};for(const [id,pos] of Object.entries(b.queueFlowLayout).slice(0,60)){const x=Number(pos?.x),y=Number(pos?.y);if(Number.isFinite(x)&&Number.isFinite(y))clean[String(id).slice(0,64)]={x:Math.max(0,Math.min(5000,x)),y:Math.max(0,Math.min(5000,y))}}b.queueFlowLayout=clean}Object.assign(all().settings,b);if(b.businessHours)all().settings.businessHours={...all().settings.businessHours,...b.businessHours};save();pushLog('SETTINGS_UPDATED',{by:u.username,queueRoutingEnabled:all().settings.queueRoutingEnabled!==false,queueFlowNodes:all().settings.queueFlowNodes?.length||0});return json(res,200,all().settings)}
+  if(method==='GET'&&p==='/api/logs')return json(res,200,all().logs.slice(0,500));
+
+  if(method==='GET'&&p==='/api/system/info'){
+    const net=lanAddresses(),db=all(),mem=process.memoryUsage();
+    let disk={availableBytes:null,totalBytes:null,usedPercent:null};
+    try{const st=fs.statfsSync(__dirname),total=Number(st.blocks)*Number(st.bsize),available=Number(st.bavail)*Number(st.bsize);disk={availableBytes:available,totalBytes:total,usedPercent:total?Math.round((1-(available/total))*100):null}}catch{}
+    let backups={count:0,lastAt:null};
+    try{const dir=backupsDir;if(fs.existsSync(dir)){const files=fs.readdirSync(dir).map(name=>{const p=path.join(dir,name);try{return{name,mtime:fs.statSync(p).mtimeMs}}catch{return null}}).filter(Boolean).sort((a,b)=>b.mtime-a.mtime);backups={count:files.length,lastAt:files[0]?.mtime||null}}}catch{}
+    const active=db.conversations.filter(c=>isCurrentOperationalConversation(c)&&isActiveConversation(c)&&!c.isChannel),recentErrors=db.logs.filter(l=>/ERROR|FAILED|FAIL|DISCONNECT/i.test(String(l.event||''))).slice(0,8);
+    return json(res,200,{version:APP_VERSION,storage:databaseInfo(),network:{port:PORT,host:HOST,urls:net},cloud:{cookieSecure:secureCookieEnabled(),runtimeDir:process.env.BALBINO_RUNTIME_DIR||null,dataDir,uploadsDir,sessionsDir,backupsDir,singleReplicaRecommended:true},clients:{sessions:sessions.size,sse:sseClients.size},node:process.version,hostname:os.hostname(),uptimeSeconds:Math.round(process.uptime()),memory:{rssBytes:mem.rss,heapUsedBytes:mem.heapUsed,heapTotalBytes:mem.heapTotal},disk,backups,connections:db.connections.map(c=>({id:c.id,name:c.name||c.id,state:c.state,lastEventAt:c.lastEventAt||null,lastError:c.lastError||null,profileName:c.profileName||null})),multiConnectionRepair:db.settings?.lastMultiConnectionRepair||null,queues:{waiting:active.filter(c=>!c.isGroup&&(c.status==='WAITING'||!c.ownerId)).length,active:active.length,unread:active.reduce((a,c)=>a+Number(c.unread||0),0),critical:hydrateConversationsFast(active).filter(c=>c.slaState==='CRITICAL').length},recentErrors});
+  }
+  if(method==='GET'&&p==='/api/groups'){
+    const q=(url.searchParams.get('q')||'').toLowerCase(),instanceId=url.searchParams.get('instanceId')||'';let groups=all().groups.filter(g=>(!instanceId||g.instanceId===instanceId)&&userCanConnection(u,g.instanceId)&&userCanGroup(u,g));
+    if(q)groups=groups.filter(g=>`${g.subject} ${g.desc||''} ${g.jid}`.toLowerCase().includes(q));
+    const rows=groups.sort((a,b)=>String(a.subject).localeCompare(String(b.subject),'pt-BR')).map(g=>{const contact=all().contacts.find(c=>c.id===g.contactId),conversation=all().conversations.find(c=>c.contactId===g.contactId&&c.instanceId===g.instanceId&&isCurrentOperationalConversation(c)&&c.status!=='CLOSED')||null,summary=conversation?conversationMessageSummary(conversation.id):{count:0,lastMessage:null};return{...g,contact,conversation:conversation?{...conversation,lastMessage:summary.lastMessage,messageCount:summary.count}:null,admins:(g.participants||[]).filter(p=>p.admin).length}});return json(res,200,rows)
+  }
+  if(method==='POST'&&p==='/api/groups/sync'){if(!requireAdmin(u,res))return;const b=await body(req);try{const instanceId=b.instanceId||'principal';const groups=await syncWhatsAppGroups(instanceId);let channels=[];try{channels=await syncWhatsAppChannels(instanceId)}catch{}return json(res,200,{ok:true,count:groups.length,groups:groups.length,channels:channels.length})}catch(e){return json(res,500,{error:e.message})}}
+  if(method==='GET'&&p==='/api/groups-channels'){
+    const q=(url.searchParams.get('q')||'').toLowerCase(),type=(url.searchParams.get('type')||'ALL').toUpperCase(),instanceId=url.searchParams.get('instanceId')||'';
+    const groupRows=all().groups.filter(g=>(!instanceId||g.instanceId===instanceId)&&userCanConnection(u,g.instanceId)&&userCanGroup(u,g)).map(g=>{const contact=all().contacts.find(c=>c.id===g.contactId),conversation=all().conversations.find(c=>c.contactId===g.contactId&&c.instanceId===g.instanceId&&!c.isChannel)||null,summary=conversation?conversationMessageSummary(conversation.id):{count:0,lastMessage:null};return{kind:'GROUP',id:g.id,jid:g.jid,name:g.subject||'Grupo WhatsApp',description:g.desc||'',size:Number(g.size||0),admins:(g.participants||[]).filter(p=>p.admin).length,instanceId:g.instanceId,updatedAt:g.updatedAt,contact,conversation:conversation?{...conversation,lastMessage:summary.lastMessage,messageCount:summary.count}:null}});
+    const channelRows=all().channels.filter(ch=>(!instanceId||ch.instanceId===instanceId)&&userCanConnection(u,ch.instanceId)).map(ch=>{const contact=all().contacts.find(c=>c.id===ch.contactId),conversation=all().conversations.find(c=>c.contactId===ch.contactId&&c.instanceId===ch.instanceId&&c.isChannel)||null,summary=conversation?conversationMessageSummary(conversation.id):{count:0,lastMessage:null};return{kind:'CHANNEL',id:ch.id,jid:ch.jid,name:ch.name||'Canal WhatsApp',description:ch.description||'',subscribers:Number(ch.subscribers||0),verification:ch.verification||null,instanceId:ch.instanceId,updatedAt:ch.updatedAt,contact,conversation:conversation?{...conversation,lastMessage:summary.lastMessage,messageCount:summary.count}:null}});
+    let rows=[...groupRows,...channelRows];if(type==='GROUP')rows=rows.filter(x=>x.kind==='GROUP');if(type==='CHANNEL')rows=rows.filter(x=>x.kind==='CHANNEL');if(q)rows=rows.filter(x=>`${x.name} ${x.description} ${x.jid}`.toLowerCase().includes(q));rows.sort((a,b)=>String(a.name).localeCompare(String(b.name),'pt-BR'));return json(res,200,{rows,counts:{ALL:groupRows.length+channelRows.length,GROUP:groupRows.length,CHANNEL:channelRows.length}})
+  }
+  let channelMessagesMatch=p.match(/^\/api\/channels\/([^/]+)\/messages$/);if(channelMessagesMatch&&method==='GET'){const ch=all().channels.find(x=>x.id===channelMessagesMatch[1]);if(!ch)return json(res,404,{error:'Canal não encontrado'});const contact=findContact(ch.contactId),conversation=all().conversations.find(c=>c.contactId===ch.contactId&&c.instanceId===ch.instanceId&&c.isChannel)||null;const page=conversation?pagedMessages(conversation.id,{limit:Math.max(1,Math.min(200,Number(url.searchParams.get('limit')||100)))}):{messages:[],hasMore:false,count:0};return json(res,200,{channel:ch,contact,conversation:conversation?hydrated(conversation):null,...page})}
+  let channelRefreshMatch=p.match(/^\/api\/channels\/([^/]+)\/refresh$/);if(channelRefreshMatch&&method==='POST'){if(!requireAdmin(u,res))return;const ch=all().channels.find(x=>x.id===channelRefreshMatch[1]);if(!ch)return json(res,404,{error:'Canal não encontrado'});try{const updated=await refreshWhatsAppChannel(ch.instanceId,ch.jid);return json(res,200,{ok:true,channel:updated})}catch(e){return json(res,500,{error:e.message})}}
+  let groupMatch=p.match(/^\/api\/groups\/([^/]+)\/open$/);if(groupMatch&&method==='POST'){const g=all().groups.find(x=>x.id===groupMatch[1]);if(!g)return json(res,404,{error:'Grupo não encontrado'});if(!userCanConnection(u,g.instanceId)||!userCanGroup(u,g))return json(res,403,{error:'Você não possui acesso a este grupo'});const b=await body(req),contact=findContact(g.contactId);if(!contact)return json(res,404,{error:'Contato interno do grupo não encontrado'});let c=all().conversations.find(x=>x.contactId===contact.id&&x.instanceId===g.instanceId&&isCurrentOperationalConversation(x)&&x.status!=='CLOSED');if(!c)c=ensureConversation(contact.id,g.instanceId,{isGroup:true,groupId:g.id,departmentId:b.departmentId||u.departmentId||'d-comercial',ownerId:null,status:'OPEN'});else{c.isGroup=true;c.groupId=g.id;c.status='OPEN'}save();emit('conversation.updated',{conversationId:c.id,isGroup:true});return json(res,200,hydrated(c))}
+
+  if(method==='GET'&&p==='/api/connections'){for(const c of all().connections){try{getWhatsAppContactPhotoSyncState(c.id)}catch{}}return json(res,200,all().connections.filter(c=>userCanConnection(u,c.id)))};
+  if(method==='POST'&&p==='/api/connections'){if(!requireAdmin(u,res))return;const b=await body(req),id=(b.id||b.name||`inst-${Date.now()}`).toLowerCase().replace(/[^a-z0-9-_]/g,'-');if(all().connections.some(c=>c.id===id))return json(res,409,{error:'Instância já existe'});const c={id,name:b.name||id,phone:'',state:'DISCONNECTED',qr:null,lastEventAt:null,connectedAt:null};all().connections.push(c);save();return json(res,201,c)}
+  routeMatch=p.match(/^\/api\/connections\/([^/]+)\/connect$/);if(routeMatch&&method==='POST'){if(!requireAdmin(u,res))return;try{await connectInstance(routeMatch[1]);return json(res,200,{ok:true})}catch(e){pushLog('CONNECTION_ERROR',{instanceId:routeMatch[1],error:e.message});return json(res,500,{error:e.message})}}
+  routeMatch=p.match(/^\/api\/connections\/([^/]+)\/disconnect$/);if(routeMatch&&method==='POST'){if(!requireAdmin(u,res))return;const b=await body(req);await disconnectInstance(routeMatch[1],Boolean(b.logout));return json(res,200,{ok:true})}
+  routeMatch=p.match(/^\/api\/connections\/([^/]+)$/);if(routeMatch&&method==='DELETE'){
+    if(!requireAdmin(u,res))return;
+    const instanceId=routeMatch[1],conn=all().connections.find(c=>c.id===instanceId);
+    if(!conn)return json(res,404,{error:'Instância não encontrada'});
+    const linkedConversations=all().conversations.filter(c=>c.instanceId===instanceId).length;
+    const linkedGroups=all().groups.filter(g=>g.instanceId===instanceId).length;
+    const linkedChannels=all().channels.filter(ch=>ch.instanceId===instanceId).length;
+    let cancelledScheduled=0;
+    for(const item of all().scheduledMessages.filter(x=>x.instanceId===instanceId&&x.status==='PENDING')){item.status='CANCELLED';item.error='Conexão excluída pelo administrador';item.cancelledAt=Date.now();cancelledScheduled++}
+    try{
+      const removed=await deleteInstance(instanceId);
+      save();pushLog('CONNECTION_DELETED',{instanceId,name:removed.name,phone:removed.phone,by:u.username,linkedConversations,linkedGroups,linkedChannels,cancelledScheduled});
+      return json(res,200,{ok:true,removed,historyPreserved:true,linkedConversations,linkedGroups,linkedChannels,cancelledScheduled});
+    }catch(e){return json(res,500,{error:e.message})}
+  }
+  routeMatch=p.match(/^\/api\/connections\/([^/]+)\/qr$/);if(routeMatch&&method==='GET'){const c=all().connections.find(x=>x.id===routeMatch[1]);if(!c)return json(res,404,{error:'Instância não encontrada'});return json(res,200,{state:c.state,qr:c.qr,lastError:c.lastError||null,waVersion:c.waVersion||null})}
+  routeMatch=p.match(/^\/api\/connections\/([^/]+)\/sync$/);if(routeMatch&&method==='POST'){if(!requireAdmin(u,res))return;const b=await body(req);try{const sync=await requestWhatsAppSync(routeMatch[1],b.mode||'ALL');pushLog('WHATSAPP_SYNC_REQUESTED',{instanceId:routeMatch[1],mode:sync.mode,by:u.username});return json(res,202,{ok:true,sync})}catch(e){return json(res,500,{error:e.message})}}
+  routeMatch=p.match(/^\/api\/connections\/([^/]+)\/sync$/);if(routeMatch&&method==='GET'){if(!requireAdmin(u,res))return;try{return json(res,200,{sync:getWhatsAppSyncState(routeMatch[1])})}catch(e){return json(res,404,{error:e.message})}}
+  routeMatch=p.match(/^\/api\/connections\/([^/]+)\/sync-photos$/);if(routeMatch&&method==='POST'){if(!requireAdmin(u,res))return;try{const b=await body(req);syncWhatsAppContactPhotos(routeMatch[1],{force:Boolean(b.force),background:true}).catch(e=>pushLog('CONTACT_AVATAR_SYNC_ASYNC_ERROR',{instanceId:routeMatch[1],error:e.message}));return json(res,202,{ok:true,avatarSync:getWhatsAppContactPhotoSyncState(routeMatch[1])})}catch(e){return json(res,500,{error:e.message})}}
+  routeMatch=p.match(/^\/api\/connections\/([^/]+)\/sync-photos$/);if(routeMatch&&method==='GET'){if(!requireAdmin(u,res))return;try{return json(res,200,{avatarSync:getWhatsAppContactPhotoSyncState(routeMatch[1])})}catch(e){return json(res,404,{error:e.message})}}
+  routeMatch=p.match(/^\/api\/connections\/([^/]+)\/sync-photos\/cancel$/);if(routeMatch&&method==='POST'){if(!requireAdmin(u,res))return;try{return json(res,200,{ok:true,avatarSync:cancelWhatsAppContactPhotoSync(routeMatch[1])})}catch(e){return json(res,500,{error:e.message})}}
+  routeMatch=p.match(/^\/api\/connections\/([^/]+)\/sync\/cancel$/);if(routeMatch&&method==='POST'){if(!requireAdmin(u,res))return;try{const sync=await cancelWhatsAppSync(routeMatch[1]);return json(res,200,{ok:true,sync})}catch(e){return json(res,500,{error:e.message})}}
+
+
+
+
+
+  if(method==='GET'&&p==='/api/api-keys')return json(res,200,all().apiKeys.map(({hash,...x})=>x));
+  if(method==='POST'&&p==='/api/api-keys'){if(!requireAdmin(u,res))return;const b=await body(req),token=`goc_${crypto.randomBytes(24).toString('hex')}`,x={id:uid('key'),name:b.name||'Integração',prefix:token.slice(0,12),hash:crypto.createHash('sha256').update(token).digest('hex'),enabled:true,createdAt:Date.now(),lastUsedAt:null};all().apiKeys.push(x);save();pushLog('API_KEY_CREATED',{keyId:x.id});return json(res,201,{...x,hash:undefined,token})}
+  routeMatch=p.match(/^\/api\/api-keys\/([^/]+)$/);if(routeMatch&&method==='DELETE'){if(!requireAdmin(u,res))return;all().apiKeys=all().apiKeys.filter(x=>x.id!==routeMatch[1]);save();return json(res,200,{ok:true})}
+  if(method==='GET'&&p==='/api/webhooks')return json(res,200,all().webhooks);
+  if(method==='POST'&&p==='/api/webhooks'){if(!requireAdmin(u,res))return;const b=await body(req),x={id:uid('wh'),name:b.name||'Webhook',url:b.url,events:Array.isArray(b.events)?b.events:['message.received'],secret:b.secret||'',enabled:true,createdAt:Date.now(),lastStatus:null,lastDeliveryAt:null};if(!/^https?:\/\//i.test(x.url||''))return json(res,400,{error:'URL de webhook inválida'});all().webhooks.push(x);save();return json(res,201,x)}
+  routeMatch=p.match(/^\/api\/webhooks\/([^/]+)$/);if(routeMatch&&method==='PATCH'){if(!requireAdmin(u,res))return;const x=all().webhooks.find(v=>v.id===routeMatch[1]);if(!x)return json(res,404,{error:'Webhook não encontrado'});Object.assign(x,await body(req),{id:x.id});save();return json(res,200,x)}if(routeMatch&&method==='DELETE'){if(!requireAdmin(u,res))return;all().webhooks=all().webhooks.filter(x=>x.id!==routeMatch[1]);save();return json(res,200,{ok:true})}
+  routeMatch=p.match(/^\/api\/webhooks\/([^/]+)\/test$/);if(routeMatch&&method==='POST'){if(!requireAdmin(u,res))return;const x=all().webhooks.find(v=>v.id===routeMatch[1]);if(!x)return json(res,404,{error:'Webhook não encontrado'});await deliverWebhook(x,'test',{message:'Teste enviado pelo Balbino Chat'});return json(res,200,{ok:true,lastStatus:x.lastStatus,lastError:x.lastError})}
+
+  if(method==='GET'&&p==='/api/backup'){const data=JSON.stringify(all(),null,2);res.writeHead(200,{'Content-Type':'application/json; charset=utf-8','Content-Disposition':`attachment; filename="balbino-chat-backup-${new Date().toISOString().slice(0,10)}.json"`});return res.end(data)}
+  if(method==='POST'&&p==='/api/backup/restore'){if(!requireAdmin(u,res))return;const b=await body(req,25*1024*1024);if(!b||typeof b!=='object'||!Array.isArray(b.contacts))return json(res,400,{error:'Backup inválido'});replaceAll(b);pushLog('BACKUP_RESTORED',{by:u.username});emit('system.reload',{});return json(res,200,{ok:true})}
+  if(method==='POST'&&p==='/api/system/operational-reset'){
+    if(!requireAdmin(u,res))return;
+    const b=await body(req);if(String(b?.confirm||'').toUpperCase()!=='ZERAR')return json(res,400,{error:'Confirmação inválida. Digite ZERAR para continuar.'});
+    const backupDir=backupsDir;fs.mkdirSync(backupDir,{recursive:true});
+    const stamp=new Date().toISOString().replace(/[:.]/g,'-');const backupFile=path.join(backupDir,`balbino-pre-marco-zero-${stamp}.json`);
+    fs.writeFileSync(backupFile,JSON.stringify(all(),null,2),'utf8');
+    const result=createOperationalReset({by:u.id});conversationLocks.clear();
+    pushLog('OPERATIONAL_RESET_CONFIRMED',{by:u.id,username:u.username,backupFile:path.basename(backupFile),...result});
+    emit('system.reload',{reason:'OPERATIONAL_RESET',at:result.at});
+    return json(res,200,{ok:true,...result,backupFile:path.basename(backupFile)});
+  }
+  if(method==='POST'&&p==='/api/dev/reset'){if(!requireAdmin(u,res))return;reset();pushLog('DEV_RESET',{by:u.username});return json(res,200,{ok:true})}
+  return json(res,404,{error:'Endpoint não encontrado'});
+}
+
+
+
+function serveFile(req,res,url){
+  let rel=decodeURIComponent(url.pathname),base=publicDir;
+  if(rel.startsWith('/uploads/')){base=uploadDir;rel=rel.slice('/uploads'.length)}
+  // Marca GO Negocia: "/" é a home de apresentação (pública) e "/app" é o sistema logado.
+  if(base===publicDir&&homeSeparada()){if(rel==='/'||rel==='')rel='/home.html';else if(rel==='/app'||rel==='/app/')rel='/index.html'}
+  if(base===publicDir&&!homeSeparada()&&rel==='/home.html')rel='/index.html';
+  if(rel==='/'||rel==='')rel='/index.html';
+  let file=path.resolve(base,'.'+rel);
+  if(!file.startsWith(path.resolve(base)))return text(res,403,'Forbidden');
+  if(!fs.existsSync(file)||fs.statSync(file).isDirectory())file=path.join(publicDir,'index.html');
+  if(req.method==='GET'&&servirComMarca(res,file,publicDir))return;
+  try{
+    const ext=path.extname(file).toLowerCase(),stat=fs.statSync(file),size=stat.size,contentType=mime[ext]||'application/octet-stream';
+    const cache=['.html','.js','.css'].includes(ext)?'no-cache':'public, max-age=3600';
+    const baseHeaders={'Content-Type':contentType,'Cache-Control':cache,'Accept-Ranges':'bytes'};
+    if(req.method==='HEAD'){res.writeHead(200,{...baseHeaders,'Content-Length':size});return res.end()}
+    const range=String(req.headers.range||'');
+    if(range){
+      const match=/bytes=(\d*)-(\d*)/.exec(range);
+      if(match){
+        let start=match[1]?Number(match[1]):0,end=match[2]?Number(match[2]):size-1;
+        if(!match[1]&&match[2]){const suffix=Number(match[2]);start=Math.max(0,size-suffix);end=size-1}
+        if(!Number.isFinite(start)||!Number.isFinite(end)||start<0||start>=size||end<start){res.writeHead(416,{...baseHeaders,'Content-Range':`bytes */${size}`});return res.end()}
+        end=Math.min(end,size-1);
+        res.writeHead(206,{...baseHeaders,'Content-Range':`bytes ${start}-${end}/${size}`,'Content-Length':end-start+1});
+        return fs.createReadStream(file,{start,end}).pipe(res)
+      }
+    }
+    res.writeHead(200,{...baseHeaders,'Content-Length':size});
+    return fs.createReadStream(file).pipe(res)
+  }catch{return text(res,404,'Not found')}
+}
+const server=http.createServer(async(req,res)=>{const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);try{if(req.method==='GET'&&url.pathname==='/healthz')return json(res,200,{ok:true,version:APP_VERSION,uptimeSeconds:Math.round(process.uptime())});if(req.method==='GET'&&url.pathname==='/__balbino/version')return json(res,200,{ok:true,version:APP_VERSION});if(url.pathname==='/webhooks/meta/whatsapp')return text(res,410,'API oficial removida do Balbino Chat');if(url.pathname.startsWith('/api/integracao/'))return await integrationApi(req,res,url);if(url.pathname.startsWith('/external/'))return await externalApi(req,res,url);if(url.pathname.startsWith('/api/'))return await api(req,res,url);if(url.pathname.startsWith('/uploads/')&&!currentUser(req))return json(res,401,{error:'AUTH_REQUIRED'});return serveFile(req,res,url)}catch(e){const errorId=crypto.randomBytes(3).toString('hex').toUpperCase();console.error(`[${errorId}]`,e);pushLog('SERVER_ERROR',{errorId,path:url.pathname,error:e.message,stack:e.stack});if(!res.headersSent)return json(res,500,{error:`Erro interno ${errorId}. Consulte Logs / Auditoria.`});try{res.end()}catch{}}});
+
+welcomeIntegration.start();
+
+setInterval(async()=>{
+  const db=all(),now=Date.now();
+  for(const f of db.followups){if(f.status==='PENDING'&&f.when&&new Date(f.when).getTime()<=now){f.status='DUE';save();pushLog('FOLLOWUP_DUE',{followupId:f.id,contactId:f.contactId});emit('followup.due',{followupId:f.id,contactId:f.contactId,reason:f.reason,when:f.when})}}
+  for(const s of db.scheduledMessages){if(s.status!=='PENDING'||!s.when||new Date(s.when).getTime()>now)continue;const ct=findContact(s.contactId);if(!ct){s.status='FAILED';s.error='Contato não encontrado';save();continue}const cv=ensureConversation(ct.id,s.instanceId||'principal'),dest=whatsappDestination(cv,ct);try{const result=await sendText(cv.instanceId,dest,s.text);const m=addMessage({conversationId:cv.id,direction:'OUT',type:'TEXT',body:s.text,status:'SENT',externalId:result?.key?.id||null,destination:dest,authorId:s.createdBy,scheduledId:s.id});s.status='SENT';s.sentAt=Date.now();save();emit('message.received',{conversationId:cv.id,message:m});pushLog('SCHEDULED_MESSAGE_SENT',{scheduledId:s.id,messageId:m.id})}catch(e){s.lastAttemptAt=Date.now();s.error=e.message;save()}}
+},15000);
+
+
+setInterval(()=>{const days=Number(all().settings.mediaRetentionDays||0);if(!days)return;const cutoff=Date.now()-days*86400000;for(const m of all().messages.filter(x=>x.file&&x.createdAt<cutoff)){try{const disk=uploadDiskPath(m.file.path);if(fs.existsSync(disk))fs.unlinkSync(disk);m.fileExpired=true;delete m.file}catch{}}save()},6*3600000);
+
+function hasStoredWhatsAppAuth(instanceId){
+  try{return fs.existsSync(path.join(sessionsDir,String(instanceId),'creds.json'))}
+  catch{return false}
+}
+async function autoConnectStoredWhatsAppSessions(){
+  if(all().settings.autoConnectWhatsApp===false){pushLog('AUTO_CONNECT_SKIPPED',{reason:'SETTING_DISABLED'});return}
+  const candidates=all().connections.filter(c=>c.state!=='EXPIRED'&&hasStoredWhatsAppAuth(c.id));
+  if(!candidates.length){pushLog('AUTO_CONNECT_SKIPPED',{reason:'NO_STORED_SESSION'});return}
+  pushLog('AUTO_CONNECT_START',{instances:candidates.map(c=>c.id)});
+  for(const c of candidates){
+    try{
+      // Nunca retomamos automaticamente uma sincronização de histórico que ficou pendente
+      // antes do último encerramento. Primeiro restauramos a sessão normal; o usuário pode
+      // solicitar nova sincronização depois de CONNECTED.
+      if(c.syncRequested){
+        c.syncRequested=false;c.sync428Attempts=0;
+        if(c.sync&&['STARTING','WAITING_PHONE','RECEIVING','RETRYING'].includes(c.sync.status)){
+          c.sync.status='INTERRUPTED';c.sync.completedAt=Date.now();c.sync.error=null;
+          c.sync.note='Sincronização interrompida pelo reinício. A conexão normal foi priorizada.';
+        }
+        save();pushLog('AUTO_CONNECT_STALE_SYNC_CLEARED',{instanceId:c.id});
+      }
+      await connectInstance(c.id);
+      pushLog('AUTO_CONNECT_REQUESTED',{instanceId:c.id});
+    }catch(e){
+      pushLog('AUTO_CONNECT_ERROR',{instanceId:c.id,error:e.message});
+    }
+    await new Promise(r=>setTimeout(r,650));
+  }
+}
+
+
+setInterval(()=>{for(const res of [...sseClients]){try{res.write(`: ping ${Date.now()}\n\n`)}catch{sseClients.delete(res)}}},15000).unref?.();
+
+let shuttingDown=false;
+async function gracefulShutdown(signal, exitProcess=true){
+  if(shuttingDown)return;shuttingDown=true;
+  console.log(`Encerrando Balbino Chat com segurança (${signal})...`);
+  try{pushLog('SERVER_SHUTDOWN',{signal,at:Date.now()});save();flush()}catch{}
+  try{await Promise.allSettled((all().connections||[]).map(c=>disconnectInstance(c.id,false)))}catch{}
+  try{flush()}catch{}
+  if(server.listening)await new Promise(resolve=>server.close(resolve));
+  if(exitProcess){setTimeout(()=>process.exit(0),8000).unref?.();process.exit(0)}
+}
+
+async function iniciarServicos(){
+  console.log(`${nomeProduto()} v${APP_VERSION} em http://localhost:${PORT}`);
+  for(const n of lanAddresses())console.log(`Rede local: ${n.url} (${n.name})`);
+  console.log(`Login inicial: ${ADMIN_USER} / ${ADMIN_PASSWORD?'senha definida no ambiente':'senha não configurada'}`);
+  console.log('WhatsApp Web: sessões salvas serão reconectadas automaticamente.');
+  if(!ADMIN_PASSWORD)console.warn('ATENÇÃO: altere GOCHAT_ADMIN_PASSWORD antes de produção.');
+  if(marcaAtual()&&process.env.GO_NEGOCIA_ENVIO_REAL!=='1')return;
+  const forced=process.env.GOCHAT_AUTO_CONNECT;
+  if(forced){setTimeout(()=>connectInstance(forced).catch(e=>pushLog('AUTO_CONNECT_ERROR',{instanceId:forced,error:e.message})),700)}
+  else setTimeout(()=>autoConnectStoredWhatsAppSessions().catch(e=>pushLog('AUTO_CONNECT_ERROR',{instanceId:'*',error:e.message})),900);
+}
+
+const embedded=process.env.CENTRAL_BALBINO_EMBEDDED==='1';
+if(process.env.HOSTED==='1'&&ADMIN_PASSWORD.length<10&&!all().users.some(u=>u.role==='SUPER_ADMIN'&&u.active!==false&&u.passwordHash))throw new Error('Defina GOCHAT_ADMIN_PASSWORD ou GO_NEGOCIA_ADMIN_SENHA com no mínimo 10 caracteres.');
+if(embedded){
+  iniciarServicos();
+}else{
+  process.on('SIGTERM',()=>gracefulShutdown('SIGTERM'));
+  process.on('SIGINT',()=>gracefulShutdown('SIGINT'));
+  server.listen(PORT,HOST,iniciarServicos);
+}
+function healthStatus() {
+  const connections = all().connections || [];
+  return { whatsapp: {
+    total: connections.length,
+    connected: connections.filter(connection => connection.state === 'CONNECTED').length,
+    reconnecting: connections.filter(connection => connection.state === 'RECONNECTING').length,
+    needsQr: connections.filter(connection => ['QR_REQUIRED', 'EXPIRED'].includes(connection.state)).length,
+    errors: connections.filter(connection => connection.state === 'ERROR').length
+  } };
+}
+
+function assertWelcomeToken(token){
+  if(welcomeIntegration.verifyToken(token))return;
+  const error=new Error('X-Token inválido ou ainda não configurado.');error.code='INVALID_TOKEN';throw error;
+}
+const matriculasWelcomeBridge=Object.freeze({
+  health(token){assertWelcomeToken(token);return{...welcomeIntegration.health(),envio_ativado:welcomeIntegration.publicConfig().enabled}},
+  activate(token){assertWelcomeToken(token);welcomeIntegration.resume();welcomeIntegration.updateConfig({enabled:true});welcomeIntegration.start();pushLog('INTEGRACAO_BOAS_VINDAS_ATIVADA_POR_MATRICULAS',{});return{ok:true,envio_ativado:true,...welcomeIntegration.health()}},
+  enqueue(token,itens){assertWelcomeToken(token);return welcomeIntegration.enqueue(itens)},
+  statuses(token,ids){assertWelcomeToken(token);return{statuses:welcomeIntegration.statuses(ids)}}
+});
+export { server, gracefulShutdown, healthStatus, matriculasWelcomeBridge };

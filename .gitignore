@@ -1,8 +1,11 @@
 .env
+node_modules/
+data/
+uploads/
+sessions/
+backups/
 runtime/
 runtime-*/
+scripts/cobranca-dados/
 *.sqlite
 *.sqlite-*
-
-# Planilhas locais nunca fazem parte do código de deploy.
-scripts/dados/

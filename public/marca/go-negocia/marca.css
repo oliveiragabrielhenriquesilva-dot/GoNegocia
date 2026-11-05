@@ -1,0 +1,19 @@
+/* GO Negocia — ajustes de marca sobre o tema do sistema (carregado só com APP_MARCA=go-negocia). */
+:root{ --go-base:#123E56; --go-detalhe:#CE795F; --go-superficie:#B8D5E3; --go-fundo:#FAF7F2; }
+:root,:root[data-skin="hybrid"]{
+  --v2-side:#123E56; --v2-side-hover:rgba(255,255,255,.07); --v2-side-active:rgba(184,213,227,.22);
+  --v2-side-text:#d3e3eb; --v2-side-text-strong:#ffffff; --v2-side-label:#9fbccb;
+}
+:root[data-skin="hybrid"] body,:root[data-skin="hybrid"] .main{background:var(--go-fundo)!important}
+:root[data-theme="dark"]{ --v2-side:#0e3247; }
+:root[data-theme="light"]:not([data-skin="hybrid"]){ --v2-side:#ffffff; --v2-side-text:#123E56; }
+.brand-logo-img{object-fit:contain}
+.login-card .logo{background:var(--go-base)!important;padding:14px}
+/* Menu lateral: logo horizontal (negativo no menu escuro, normal no menu claro); recolhido mostra o monograma */
+:root body .sidebar .brand>.logo.logo{width:150px!important;height:30px!important;flex:0 0 auto!important;padding:0!important;background:url(/marca/go-negocia/logo-go-negocia-negativo.png) left center/contain no-repeat!important;border:0!important;border-radius:0!important;box-shadow:none!important}
+:root body .sidebar .brand>.logo.logo .brand-logo-img{opacity:0!important}
+html body .sidebar .brand .brand-text{position:absolute!important;width:1px!important;height:1px!important;overflow:hidden!important;clip:rect(0 0 0 0)!important}
+:root[data-theme="light"]:not([data-skin="hybrid"]) body .sidebar .brand>.logo.logo{background-image:url(/marca/go-negocia/logo-go-negocia.png)!important}
+:root body.sidebar-collapsed .sidebar .brand>.logo.logo{width:42px!important;height:22px!important;background-image:url(/marca/go-negocia/monograma-go-negativo.png)!important}
+:root[data-theme="light"]:not([data-skin="hybrid"]) body.sidebar-collapsed .sidebar .brand>.logo.logo{background-image:url(/marca/go-negocia/monograma-go.png)!important}
+.portal-link{background:#DCEAF1!important;border-color:#B8D5E3!important;color:#123E56!important}
