@@ -17,6 +17,8 @@ A integração ativa deste pacote usa WhatsApp Web. A configuração de WhatsApp
 
 ## Migração da v0.2.1
 
+Na Hostinger, o arranque procura o banco da versão anterior na pasta configurada ou nos diretórios de builds mantidos para o mesmo site. Sem caminho explícito, usa uma pasta persistente ao lado de `hbuilds`. Se encontrar um banco compatível, migra para `data/` no runtime antes de iniciar. Se ambos os bancos novos já existirem, usa-os diretamente. As variáveis `BALBINO_DATA_DIR` e `BALBINO_COBRANCA_DB` desativam a migração automática e destinam-se a ambientes previamente preparados.
+
 Confirme o arquivo SQLite usado pelo site atual. Faça uma cópia consistente com SQLite Backup API ou pare a aplicação antes de copiar o banco e seus arquivos WAL/SHM associados. Guarde o original. Use uma **nova** pasta de runtime persistente e execute:
 
 ```bash
