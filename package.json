@@ -1,6 +1,6 @@
 {
   "name": "go-negocia",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "GO Negocia — Atendimento financeiro para escolas. Incremento 1: instituições, permissões, carteira, atendimento e fila.",
   "type": "module",

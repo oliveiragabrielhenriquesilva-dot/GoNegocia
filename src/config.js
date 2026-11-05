@@ -20,7 +20,7 @@ try {
   }
 } catch { /* .env opcional */ }
 
-export const VERSAO = '0.2.0';
+export const VERSAO = '0.2.1';
 export const NOME_PRODUTO = 'GO Negocia';
 
 // Variáveis de ambiente: o nome novo é GO_NEGOCIA_*. O prefixo antigo OLIVELO_* continua aceito como

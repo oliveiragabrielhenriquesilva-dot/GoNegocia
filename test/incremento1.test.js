@@ -14,7 +14,7 @@ process.env.META_APP_SECRET = 'segredo-de-teste';
 process.env.GO_NEGOCIA_WEBHOOK_VERIFY_TOKEN = 'verificacao-teste';
 process.env.GO_NEGOCIA_ADMIN_SENHA = '';
 
-const { iniciar } = await import('../server.js');
+const { iniciar } = await import('../app.js');
 const { arquivoDemo } = await import('../scripts/fixtures-sinteticas.js');
 const { popular, SENHA_DEMO } = await import('../scripts/seed-sintetico.js');
 const db = await import('../src/db.js');
