@@ -1,4 +1,24 @@
-# GO Negocia v0.3.0
+# GO Negocia
+
+Projeto de atendimento e cobrança escolar, voltado à centralização de processos financeiros e comunicação.
+
+## Funcionalidades
+Gestão de títulos, histórico, lotes, atendimento e separação de instituições. Integração com WhatsApp Web e migração de dados com validação.
+
+## Tecnologias
+Node.js, JavaScript, SQLite e testes automatizados previstos no fluxo do projeto.
+
+## Minha atuação
+Regras de negócio financeiras, requisitos, prototipagem assistida por IA, validação e documentação.
+
+## Privacidade
+Use apenas dados sintéticos em demonstrações. Não publique bases financeiras ou sessões.
+
+---
+
+## Referência operacional preservada
+
+### GO Negocia v0.3.0
 
 Atendimento do Balbino Chat com cobrança escolar incorporada. A página inicial está em `/` e o painel em `/app`.
 
